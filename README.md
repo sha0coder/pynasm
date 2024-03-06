@@ -58,7 +58,10 @@ check the examples folder.
 
 ## TODO:
 
-- use pushad/popad on prologe/epiloge to isolate registers on functions
-- support local vars?
+- use pushad/popad on prologe/epiloge to isolate registers on functions?
+- support local vars
+- rax = [0x1a, 0x3b, 0xff, 0x00]
+- elif
+
 
 
