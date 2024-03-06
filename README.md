@@ -40,6 +40,10 @@ check the examples folder.
 ![emulated binary](pics/strings_compare.png)
 
 
+### API Call
 
+![api call](pics/api_call1.png)
+
+![emulation](pics/api_call2.png)
 
 
