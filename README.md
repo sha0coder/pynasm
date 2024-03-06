@@ -53,7 +53,7 @@ check the examples folder.
 
 ![virtual allocs](pics/api_call3.png)
 
-![emulation](pics/api_call2.png)
+![emulation](pics/api_call4.png)
 
 
 ## TODO:
