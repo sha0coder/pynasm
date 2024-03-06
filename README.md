@@ -22,7 +22,7 @@ nasm -f bin shellcode.nasm -o shellcode
 
 ## Check with SCEMU
 
-./scemu -f shellcode -vv
+./scemu -f shellcode -vv -6
 
 ## Examples
 
