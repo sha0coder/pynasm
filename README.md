@@ -17,12 +17,16 @@ Don't use this for creating malicious payloads!
 
 ## Usage
 
+```bash
 python3 pynasm.py shellcode.py
 nasm -f bin shellcode.nasm
+```
 
 ## Emulate with SCEMU
 
+```bash
 ./scemu -f shellcode -vv -6
+```
 
 ## Examples
 
