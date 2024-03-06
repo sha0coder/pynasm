@@ -51,3 +51,6 @@ check the examples folder.
 ![emulation](pics/api_call2.png)
 
 
+![virtual allocs](pics/api_call3.png)
+
+![emulation](pics/api_call2.png)
