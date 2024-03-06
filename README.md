@@ -31,6 +31,7 @@ check the examples folder.
 ### Comparing strings
 
 ![python code](pics/strings_compare1.png)
+
 ![emulated binary](pics/strings_compare.png)
 
 
