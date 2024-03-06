@@ -22,7 +22,7 @@ python3 pynasm.py shellcode.py
 nasm -f bin shellcode.nasm
 ```
 
-## Emulate with SCEMU
+## Emulate with SCEMU for testing
 
 ```bash
 ./scemu -f shellcode -vv -6
