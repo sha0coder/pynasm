@@ -18,12 +18,23 @@ Don't use this for creating malicious payloads!
 ## Usage
 
 python3 pynasm.py shellcode.py
-nasm -f bin shellcode.nasm -o shellcode 
+nasm -f bin shellcode.nasm
 
-## Check with SCEMU
+## Emulate with SCEMU
 
 ./scemu -f shellcode -vv -6
 
 ## Examples
 
 check the examples folder.
+
+### Comparing strings
+
+![python code](pics/strings_compare1.png)
+![emulated binary](pics/strings_compare.png)
+
+
+
+
+
+
