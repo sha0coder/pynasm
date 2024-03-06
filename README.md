@@ -28,6 +28,11 @@ nasm -f bin shellcode.nasm
 
 check the examples folder.
 
+
+### Control blocks
+
+![blocks](pics/blocks.png)
+
 ### Comparing strings
 
 ![python code](pics/strings_compare1.png)
@@ -35,10 +40,6 @@ check the examples folder.
 ![emulated binary](pics/strings_compare.png)
 
 
-### Control blocks
-
-
-![blocks](pics/strings_compare.png)
 
 
 
