@@ -34,7 +34,7 @@ def names_and_pointers():
     return 0
 
 
-def get_api_addr(rdx, rcx): # rdx: api_name rcx: api_size
+def get_api(rdx, rcx): # rdx: api_name rcx: api_size
     rax = 0
     while True:
         rdi = 0
@@ -65,13 +65,14 @@ def runtime():
     names_and_pointers()
     return 0
 
-
+'''
 def main():
     runtime()
     rax = 'WinExec'
-    rax = get_api_addr(rax, 7)
+    rax = get_api(rax, 7)
     rcx = 'calc.exe'
     rax(rcx, 1)  # pretty huh?
     return 0
+'''
 
 
