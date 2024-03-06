@@ -35,7 +35,10 @@ check the examples folder.
 ![emulated binary](pics/strings_compare.png)
 
 
+### Control blocks
 
+
+![blocks](pics/strings_compare.png)
 
 
 
