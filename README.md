@@ -28,6 +28,10 @@ nasm -f bin shellcode.nasm
 ./scemu -f shellcode -vv -6
 ```
 
+## Demo
+
+https://www.youtube.com/watch?v=o072bXNtxmg
+
 ## Examples
 
 check the examples folder.
