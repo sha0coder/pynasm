@@ -1,10 +1,11 @@
 
 
 def main():
-    ebx = 0
-    eax = 3
-    if eax == 1:
-        ebx = 1
+    rbx = 0
+    rax = 3
+    if rax == 1:
+        if rbx == rbx:
+            return 1
     else:
-        ebx = 0
-
+        rbx = 0
+    return 0
