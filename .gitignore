@@ -1,6 +1,8 @@
 *.pyc
 *.nasm
 runtime
+runtime2
+runtime2.py
 bkp/
 test
 apicall2
