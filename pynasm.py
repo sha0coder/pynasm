@@ -205,7 +205,7 @@ class visit_functions(ast.NodeVisitor):
                             nasm.append(f'  push {arg}')
                         elif isinstance(arg, ast.Name):  # vars
                             arg = arg.id
-                            if s_reg(arg):
+                            if is_reg(arg):
                                 nasm.append(f'  push {arg}')
                             else:
                                 pos = self.vars.get_pos(self.current_func, arg)
