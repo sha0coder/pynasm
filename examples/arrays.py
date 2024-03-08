@@ -5,9 +5,10 @@ def substrings():
     s[3] = 0
     i = 0
     al = s[i]
-    s[i] = len(s)
+    rbx = len(s)
+    s[i] = bl
     '''
-    if s[3] == 0x41:
+    TODO: if s[3] == 0x41:
     '''
     return 0
 
