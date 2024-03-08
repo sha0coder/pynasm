@@ -9,10 +9,20 @@
 import sys
 import ast
 
+STACK_SPACE = 5*8 # space for 5 local vars
 nasm = []
 lbl = 1
 
-regs64 = ['rax','rbx','rcx','rdx','rsi','rdi', 'rbp','rsp','r8','r9','r10','r11','r12','r13','r14','r15']
+
+regs64 = ['rax','rbx','rcx','rdx','rsi','rdi','rbp','rsp','r8','r9','r10','r11','r12','r13','r14','r15','rip']
+regs32 = ['eax','ebx','ecx','edx','esi','edi','rbp','esp','eip','r8d','r9d','r10d','r11d','r12d','r13d','r14d','r15d']
+regs16 = ['ax','bx','cx','dx','si','di','bp','sp','ip','r8w','r9w','r10w','r11w','r12w','r13w','r14w','r15w']
+regs8 = ['al','ah','bl','bh','cl','ch','dl','dh','r8l','r9l','r10l','r11l','r12l','r13l','r14l','r15l']
+xmm = ['xmm0','xmm1','xmm2','xmm3','xmm4','xmm5','xmm6','xmm7','xmm8','xmm9','xmm10','xmm11','xmm12','xmm13','xmm14','xmm15']
+ymm = ['ymm0','ymm1','ymm2','ymm3','ymm4','ymm5','ymm6','ymm7','ymm8','ymm9','ymm10','ymm11','ymm12','ymm13','ymm14','ymm15']
+
+is_reg = lambda r : r in regs64 or r in regs32 or r in regs16 or r in regs8 or r in xmm or r in ymm
+
 
 
 def unimplemented(msg): # rust style
@@ -20,9 +30,55 @@ def unimplemented(msg): # rust style
     sys.exit(1)
 
 
+class Var:
+
+    def __init__(self, func, name, pos, s=None):
+        self.func = func
+        self.name = name
+        self.pos = pos
+        self.str = s
+
+class LocalVars:
+
+    def __init__(self):
+        self.vars = []
+
+    def add(self, var):
+        self.vars.append(var)
+
+    def get_str(self, func, name):
+        for var in self.vars:
+            #print(f' if {var.func} == {func} and {var.name} == {name}:')
+            if var.func == func and var.name == name:
+                #print(f' str: {var.str}')
+                return var.str
+        return None
+    
+    def get_pos(self, func, name, s=None):
+        for var in self.vars:
+            if var.func == func and var.name == name:
+                if s:
+                    var.str = s
+                return var.pos * 8 + 8
+        pos = self.get_next_pos(func)
+        self.add( Var(func, name, pos, s) )
+        return pos * 8 + 8
+
+    def get_next_pos(self, func):
+        nxt = 0
+        for var in self.vars:
+            if var.func == func:
+                nxt += 1
+        return nxt
+           
+
+
+
+
 class visit_functions(ast.NodeVisitor):
     def __init__(self):
-        pass
+        self.current_func = ''
+        self.vars = LocalVars()
 
 
     def visit_Import(self, node):
@@ -41,13 +97,20 @@ class visit_functions(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node):
         global nasm
+        self.current_func = node.name
         nasm.append(f'\n{node.name}:')
         nasm.append(f'  push rbp')
         nasm.append(f'  mov rbp, rsp')
-        nasm.append(f'  sub rsp, 32')
+        nasm.append(f'  sub rsp, {STACK_SPACE}')
         i = 16 
         for arg in node.args.args:
-            nasm.append(f'  mov {arg.arg}, [rbp+{i}]')
+            if is_reg(arg.arg):
+                nasm.append(f'  mov {arg.arg}, qword [rbp+{i}]')
+            else:
+                pos = self.vars.get_pos(self.current_func, arg.arg)
+                nasm.append(f'  mov rdi, qword [rbp+{i}]')
+                nasm.append(f'  mov qword [rbp-{pos}], rdi')
+
             i += 8
         self.generic_visit(node)
 
@@ -75,6 +138,18 @@ class visit_functions(ast.NodeVisitor):
                 return
             elif node.func.id == 'str':
                 return
+            elif node.func.id == 'len':
+                if is_reg(node.args[0].id):
+                    unimplemented("len(reg) use len(var)")
+                else:
+                    s = self.vars.get_str(self.current_func, node.args[0].id)
+                    if s:
+                        nasm.append(f'  mov rax, {len(s)}')
+                        self.generic_visit(node)
+                    else:
+                        unimplemented('len() weird case')
+                    return
+
             elif node.func.id in regs64:
                 # call reg64 -> use 64bits calling convention
 
@@ -85,6 +160,9 @@ class visit_functions(ast.NodeVisitor):
                         arg = arg.value
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
+                        if not is_reg(arg):
+                            pos = self.vars.get_pos(self.current_func, arg)
+                            arg = f'qword [rbp-{pos}]'
                     if arg != 'rcx':
                         nasm.append(f'  mov rcx, {arg}')
                 if l >= 2:
@@ -93,6 +171,9 @@ class visit_functions(ast.NodeVisitor):
                         arg = arg.value
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
+                        if not is_reg(arg):
+                            pos = self.vars.get_pos(self.current_func, arg)
+                            arg = f'qword [rbp-{pos}]'
                     if arg != 'rdx':
                         nasm.append(f'  mov rdx, {arg}')
                 if l >= 3:
@@ -101,6 +182,9 @@ class visit_functions(ast.NodeVisitor):
                         arg = arg.value
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
+                        if not is_reg(arg):
+                            pos = self.vars.get_pos(self.current_func, arg)
+                            arg = f'qword [rbp-{pos}]'
                     if arg != 'r8':
                         nasm.append(f'  mov r8, {arg}')
                 if l >= 4:
@@ -109,16 +193,32 @@ class visit_functions(ast.NodeVisitor):
                         arg = arg.value
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
+                        if not is_reg(arg):
+                            pos = self.vars.get_pos(self.current_func, arg)
+                            arg = f'qword [rbp-{pos}]'
                     if arg != 'r9':
                         nasm.append(f'  mov r9, {arg}')
                 if l > 4:
                     for arg in reversed(node.args[4:]):
                         if isinstance(arg, ast.Constant):  # constants 
                             arg = arg.value
+                            nasm.append(f'  push {arg}')
                         elif isinstance(arg, ast.Name):  # vars
                             arg = arg.id
-                        nasm.append(f'  push {arg}')
+                            if s_reg(arg):
+                                nasm.append(f'  push {arg}')
+                            else:
+                                pos = self.vars.get_pos(self.current_func, arg)
+                                arg = f'qword [rbp-{pos}]'
+                                nasm.append(f'  mov edi, {arg}')
+                                nasm.append(f'  push edi')
+
+                        else:
+                            unimplemented("call with more than 4 args in weird param")
+
                 nasm.append(f'  call {node.func.id}')
+                if len(node.args) > 0:
+                    nasm.append(f'  add rsp, {len(node.args) * 8}')
                 return
 
 
@@ -127,15 +227,17 @@ class visit_functions(ast.NodeVisitor):
             if isinstance(arg, ast.Constant):  # constants 
                 nasm.append(f'  push {arg.value}')
             elif isinstance(arg, ast.Name):  # vars
-                nasm.append(f'  push {arg.id}')
+                if is_reg(arg.id):
+                    nasm.append(f'  push {arg.id}')
+                else:
+                    pos = self.vars.get_pos(self.current_func, arg.id)
+                    nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                    nasm.append(f'  push rdi')
+
 
         if isinstance(node.func, ast.Name):
             fname = node.func.id
-            if fname.startswith('api_'):
-                nasm.append(f'  apicall {fname}')
-            else:
-
-                nasm.append(f'  call {fname}')
+            nasm.append(f'  call {fname}')
 
         elif isinstance(node.func, ast.Attribute):
             fname = node.func.attr
@@ -160,10 +262,17 @@ class visit_functions(ast.NodeVisitor):
     def visit_Return(self, node):
         global nasm
         if isinstance(node.value, ast.Constant):
-            nasm.append(f'  mov rax, {node.value.value}')
+            if node.value.value == 0:
+                nasm.append(f'  xor rax, rax')
+            else:
+                nasm.append(f'  mov rax, {node.value.value}')
         elif isinstance(node.value, ast.Name):
-            if node.value.id != 'rax':
-                nasm.append(f'  mov rax, {node.value.id}')
+            if is_reg(node.value.id):
+                if node.value.id != 'rax':
+                    nasm.append(f'  mov rax, {node.value.id}')
+            else:
+                pos = self.vars.get_pos(self.current_func, node.value.id)
+                nasm.append(f'  mov rax, [rbp-{pos}]')
         else:
             unimplemented('return '+node.value)
         nasm.append('  leave')
@@ -191,15 +300,24 @@ class visit_functions(ast.NodeVisitor):
                 left = node.test.left.value
             else:
                 left = node.test.left.id
+                if not is_reg(left):
+                    pos = self.vars.get_pos(self.current_func, left)
+                    left = f'qword [rbp-{pos}]'
 
             if isinstance(node.test.comparators[0], ast.Constant):
                 right = node.test.comparators[0].value
             else:
                 right = node.test.comparators[0].id
+                if not is_reg(right):
+                    pos = self.vars.get_pos(self.current_func, right)
+                    right = f'qword [rbp-{pos}]'
 
-            nasm.append(f'  mov rsi, {left}')
-            nasm.append(f'  mov rdi, {right}')
-            nasm.append(f'  cmp rsi, rdi')
+            if is_reg(right) and is_reg(left):
+                nasm.append(f'  cmp {left}, {right}')
+            else:
+                nasm.append(f'  mov rsi, {left}')
+                nasm.append(f'  mov rdi, {right}')
+                nasm.append(f'  cmp rsi, rdi')
 
             ops = node.test.ops[0]
             if isinstance(ops, ast.Gt):
@@ -237,6 +355,10 @@ class visit_functions(ast.NodeVisitor):
                                 range_max = args[0].value
                             else:
                                 range_max = args[0].id
+                                if not is_reg(range_max):
+                                    pos = self.vars.get_pos(self.current_func, range_max)
+                                    range_max = f'qword [rbp-{pos}]'
+
                             range_step = 1  
                         elif len(args) == 2:
                             # range(start, stop)
@@ -244,10 +366,16 @@ class visit_functions(ast.NodeVisitor):
                                 range_min = args[0].value
                             else:
                                 range_min = args[0].id
+                                if not is_reg(range_min):
+                                    pos = self.vars.get_pos(self.current_func, range_min)
+                                    range_min = f'qword [rbp-{pos}]'
                             if isinstance(args[1], ast.Constant):
                                 range_max = args[1].value
                             else:
                                 range_max = args[1].id
+                                if not is_reg(range_max):
+                                    pos = self.vars.get_pos(self.current_func, range_max)
+                                    range_max = f'qword [rbp-{pos}]'
                             range_step = 1 
                         elif len(args) == 3:
                             # range(start, stop, step)
@@ -255,20 +383,35 @@ class visit_functions(ast.NodeVisitor):
                                 range_min = args[0].value
                             else:
                                 range_min = args[0].id
+                                if not is_reg(range_min):
+                                    pos = self.vars.get_pos(self.current_func, range_min)
+                                    range_min = f'qword [rbp-{pos}]'
                             if isinstance(args[1], ast.Constant):
                                 range_max = args[1].value
                             else:
                                 range_max = args[1].id
+                                if not is_reg(range_max):
+                                    pos = self.vars.get_pos(self.current_func, range_max)
+                                    range_max = f'qowrd [rbp-{pos}]'
                             if isinstance(args[2], ast.Constant):
                                 range_step= args[2].value
                             else:
                                 range_step = args[2].id
+
+                        pos = 0
+                        if not is_reg(reg):
+                            pos = self.vars.get_pos(self.current_func, reg)
+                            nasm.append(f'  mov rcx, qword [rbp-{pos}]')
+                            reg = 'rcx'
+
                         nasm.append(f'  mov {reg}, {range_min}')
                         for_lbl = f'for{lbl}'
                         lbl += 1
                         nasm.append(f'{for_lbl}:')
                         self.generic_visit(node)
                         nasm.append(f'  add {reg}, {range_step}')
+                        if pos > 0:
+                            nasm.append(f'  mov qword [rbp-{pos}], {reg}')
                         nasm.append(f'  cmp {reg}, {range_max}')
                         nasm.append(f'  jle {for_lbl}')
 
@@ -311,9 +454,23 @@ class visit_functions(ast.NodeVisitor):
                             right = right.value
                         else:
                             right = right.id
-                        nasm.append(f'  mov rsi, {str(left)}')
-                        nasm.append(f'  mov rdi, {str(right)}')
-                        nasm.append('  cmp rsi, rdi')
+
+                        if is_reg(left) and not is_reg(right):
+                            pos = self.vars.get_pos(self.current_func, right)
+                            right = '[rbp-{pos}]'
+                        elif not is_reg(left) and is_reg(right):
+                            pos = self.vars.get_pos(self.current_func, left)
+                            left = '[rbp-{pos}]'
+                        else:
+                            # let's alloc if var1 == var2 using rsi and rdi
+                            pos1 = self.vars.get_pos(self.current_func, left)
+                            pos2 = self.vars.get_pos(self.current_func, right)
+                            nasm.append(f'  mov rsi, [rbp-{pos1}]')
+                            nasm.append(f'  mov rdi, [rbp-{pos2}]')
+                            left = 'rsi'
+                            right = 'rdi'
+
+                        nasm.append(f'  cmp {left}, {right}')
 
                     label_if = f'if{lbl}'
                     lbl += 1
@@ -366,25 +523,53 @@ class visit_functions(ast.NodeVisitor):
         global nasm, lbl
         for target in node.targets:
             if isinstance(node.value, ast.Constant):
+                pos = self.vars.get_pos(self.current_func, target.id)
                 if node.value.value == 0:
-                    nasm.append(f'  xor {target.id}, {target.id}')
+                    if is_reg(target.id):
+                        nasm.append(f'  xor {target.id}, {target.id}')
+                    else:
+                        nasm.append(f'  mov qword [rbp-{pos}], 0')
                 else:
                     try:
                         n = int(node.value.value)
-                        nasm.append(f'  mov {target.id}, {node.value.value}')
+                        if is_reg(target.id):
+                            nasm.append(f'  mov {target.id}, {node.value.value}')
+                        else:
+                            nasm.append(f'  mov qword [rbp-{pos}], {node.value.value}')
                     except:
+                        # strings
                         nasm.append(f'  call lbl{lbl}')
                         nasm.append(f'  db "{node.value.value}",0')
                         nasm.append(f'lbl{lbl}:')
-                        nasm.append(f'  pop {target.id}')
                         lbl += 1
+                        if is_reg(target.id):
+                            nasm.append(f'  pop {target.id}')
+                        else:
+                            pos = self.vars.get_pos(self.current_func, target.id, node.value.value)
+                            nasm.append(f'  pop rdi')
+                            nasm.append(f'  mov [rbp-{pos}], rdi')
+
             elif isinstance(node.value, ast.Name):
                 if node.value.id == 'PEB':
                     nasm.append(f'  xor rdi, rdi')
-                    nasm.append(f'  mov {target.id}, gs:[rdi+0x60]')
+                    if is_reg(target.id):
+                        nasm.append(f'  mov {target.id}, gs:[rdi+0x60]')
+                    else:
+                        pos = self.vars.get_pos(self.current_func, target.id)
+                        nasm.append(f'  mov rsi, gs:[rdi+0x60]')
+                        nasm.append(f'  mov qword [rbp-{pos}], rsi')
+
                 else:
                     if target.id != node.value.id:
-                        nasm.append(f'  mov {target.id}, {node.value.id}')
+                        if is_reg(target.id) and is_reg(node.value.id):
+                            nasm.append(f'  mov {target.id}, {node.value.id}')
+                        elif not is_reg(target.id) and is_reg(node.value.id):
+                            pos = self.vars.get_pos(self.current_func, target.id)
+                            nasm.append(f'  mov qword [rbp-{pos}], {node.value.id}')
+                        elif is_reg(target.id) and not is_reg(node.value.id):
+                            pos = self.vars.get_pos(self.current_func, node.value.id)
+                            nasm.append(f'  mov {target.id}, qword [rbp-{pos}]')
+
 
             elif isinstance(node.value, ast.Subscript):
                 if node.value.value.id == 'mem':
@@ -452,7 +637,11 @@ class visit_functions(ast.NodeVisitor):
 
             elif isinstance(node.value, ast.Call): # asign call: ebx = somthing()
                 self.generic_visit(node)
-                nasm.append(f'  mov {target.id}, rax')
+                if is_reg(target.id):
+                    nasm.append(f'  mov {target.id}, rax')
+                else:
+                    pos = self.vars.get_pos(self.current_func, target.id)
+                    nasm.append(f'  mov [ebp-{pos}], rax')
                 return
 
 
@@ -467,8 +656,21 @@ class visit_functions(ast.NodeVisitor):
     def visit_AugAssign(self, node):
         global nasm
         reg = node.target.id
+
+        if not is_reg(reg):
+            pos = self.vars.get_pos(self.current_func, reg)
+            reg = f'qword [rbp-{pos}]'
+
         if isinstance(node.value, ast.Name):
             val = node.value.id
+            if not is_reg(val):
+                if not is_reg(reg):
+                    unimplemented("canot do operation with var <operator> var")
+                else:
+                    pos = self.vars.get_pos(self.current_func, val)
+                    val = f'qword [rbp-{pos}]'
+
+
         elif isinstance(node.value, ast.Constant):
             val = node.value.value
         else:
