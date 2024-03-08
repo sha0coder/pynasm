@@ -1,6 +1,6 @@
 
 
-def do_something(ecx):
+def do_something(a):
     return 1
 
 def main():
@@ -22,8 +22,5 @@ def main():
             for rcx in range(3,10,1):
                 rax = do_something(rcx)
 
-    ebx = 3
-    while ebx > 0:
-        ebx -= 1
 
 

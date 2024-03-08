@@ -292,7 +292,7 @@ class visit_functions(ast.NodeVisitor):
             if str(node.test.value) == 'True':
                 nasm.append(f'  jmp {lbl_while}')
             else:
-                unimplemented('value'+str(node.test.value))
+                unimplemented('value '+str(node.test.value))
 
         elif isinstance(node.test, ast.Compare):
 
@@ -502,11 +502,11 @@ class visit_functions(ast.NodeVisitor):
                         if is_reg(left) and not is_reg(right):
                             # if eax == 3:
                             pos = self.vars.get_pos(self.current_func, right)
-                            right = '[rbp-{pos}]'
+                            right = f'qword [rbp-{pos}]'
                         elif not is_reg(left) and is_reg(right):
                             # if 3 == eax:
                             pos = self.vars.get_pos(self.current_func, left)
-                            left = '[rbp-{pos}]'
+                            left = f'qword [rbp-{pos}]'
                         else:
                             # let's alloc if var1 == var2 using rsi and rdi
                             if left != ' al' and right != ' bl':
