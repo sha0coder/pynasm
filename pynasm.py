@@ -446,29 +446,89 @@ class visit_functions(ast.NodeVisitor):
                     if cmpsb:
                         nasm.append(f'  repe cmpsb')
                     else:
-                        if isinstance(left, ast.Constant):
-                            left = left.value
-                        else:
-                            left = left.id
-                        if isinstance(right, ast.Constant):
-                            right = right.value
-                        else:
-                            right = right.id
+                        if isinstance(left, ast.Subscript):
+                            var = left.value.id 
+                            pos = self.vars.get_pos(self.current_func, var)
+                            if isinstance(left.slice, ast.Constant):
+                                # if a[0] == 3
+                                idx = left.slice.value
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
+                                nasm.append(f'  mov al, byte [rsi+{idx}]')
+                            else:
+                                # if a[i] == 3
+                                idx = left.slice.id
+                                pos2 = self.vars.get_pos(self.current_func, idx)
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
+                                nasm.append(f'  mov rdi, qword [rbp-{pos2}]')
+                                nasm.append(f'  mov al, byte [rsi+rdi]')
+                            left = ' al'
+
+                        if isinstance(right, ast.Subscript):
+                            # if 3 == a[0]:
+                            var = right.value.id 
+                            pos = self.vars.get_pos(self.current_func, var)
+                            if isinstance(left.slice, ast.Constant):
+                                # if a[0] == ...
+                                idx = right.slice.value
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
+                                nasm.append(f'  mov bl, byte [rsi]')
+                            else:
+                                # if a[i] == ...
+                                idx = right.slice.id
+                                pos2 = self.vars.get_pos(self.current_func, idx)
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
+                                nasm.append(f'  mov rdi, qword [rbp-{pos2}]')
+                                nasm.append(f'  mov bl, byte [rsi+rdi]')
+                            right = ' bl'
+
+                       
+                        
+                        if not isinstance(left, str):
+                            if isinstance(left, ast.Constant):
+                                # if 3 == ...
+                                left = left.value
+                            else:
+                                # if a == ...
+                                left = left.id
+
+                        if not isinstance(right, str):
+                            if isinstance(right, ast.Constant):
+                                # if ... == 3
+                                right = right.value
+                            else:
+                                # if ... == a
+                                right = right.id
 
                         if is_reg(left) and not is_reg(right):
+                            # if eax == 3:
                             pos = self.vars.get_pos(self.current_func, right)
                             right = '[rbp-{pos}]'
                         elif not is_reg(left) and is_reg(right):
+                            # if 3 == eax:
                             pos = self.vars.get_pos(self.current_func, left)
                             left = '[rbp-{pos}]'
                         else:
                             # let's alloc if var1 == var2 using rsi and rdi
-                            pos1 = self.vars.get_pos(self.current_func, left)
-                            pos2 = self.vars.get_pos(self.current_func, right)
-                            nasm.append(f'  mov rsi, [rbp-{pos1}]')
-                            nasm.append(f'  mov rdi, [rbp-{pos2}]')
-                            left = 'rsi'
-                            right = 'rdi'
+                            if left != ' al' and right != ' bl':
+                                # if a == b: 64bits compare
+                                pos1 = self.vars.get_pos(self.current_func, left)
+                                nasm.append(f'  mov rsi, [rbp-{pos1}]')
+                                left = 'rsi'
+
+                                pos2 = self.vars.get_pos(self.current_func, right)
+                                nasm.append(f'  mov rdi, [rbp-{pos2}]')
+                                right = 'rdi'
+                            elif left == ' al' and right == ' bl':
+                                pass
+                            elif left == ' al' and right != ' bl':
+                                nasm.append(f'  mov bl, byte \'{right}\'')
+                                right = ' bl'
+                            elif left != ' al' and right == ' bl':
+                                nasm.append(f'  mov al, byte \'{left}\'')
+                                left = ' al'
+                            else:
+                                unimiplemented("imposible case")
+
 
                         nasm.append(f'  cmp {left}, {right}')
 
