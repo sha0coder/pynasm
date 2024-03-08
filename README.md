@@ -62,11 +62,11 @@ check the examples folder.
 
 ## TODO:
 
-- mybytes = [0x1a, 0x3b, 0xff, 0x00]
 - complex ifs and/or
 - elif
 - break
 - continue
+- structures
 
 
 
