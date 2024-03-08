@@ -1,20 +1,21 @@
 '''
     relocatable strings are compiled to call + ret 
 
-    'ecx' and 'if str(eax) == str(ebx):' is a way 
+    'rcx' and 'if str(rax) == str(rbx):' is a way 
     to compare strings with the instruction 
 '''
 
-def process(eax, ecx):
-    ebx = 'not hello'
-    if str(eax) == str(ebx):
+def process(rax, rcx):
+    rbx = 'not hello'
+    if str(rax) == str(rbx):
         return 1
     return 0
 
 
 def main():
-    eax = 'hello'
-    eax = process(eax, 5)
-    if eax == 1:
+    msg = 'hello'
+    rax = process(msg, 5)
+    if rax == 1:
         pass
 
+    return 0
