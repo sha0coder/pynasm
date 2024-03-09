@@ -61,9 +61,8 @@ def get_api(lib, name):
     ptr_load = get_kernel32_api(str_load, len_load)
     ptr_proc = get_kernel32_api(str_proc, len_proc)
     rax = ptr_load
-    asm(' int 3')
     hndl = rax(lib)
-    rax = ptr_proc
+    rax = ptr_proc # ebp-40h
     ptr = rax(hdnl, name)
     return ptr
 

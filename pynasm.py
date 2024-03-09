@@ -9,7 +9,7 @@
 import sys
 import ast
 
-STACK_SPACE = 5*8 # space for 5 local vars
+STACK_SPACE = 10*8 # space for 10 local vars
 nasm = []
 lbl = 1
 
@@ -122,7 +122,7 @@ class visit_functions(ast.NodeVisitor):
 
 
     def visit_Call(self, node):
-        global nasm
+        global nasm, lbl
     
         if isinstance(node.func, ast.Name): # built-ins
             if node.func.id == 'range':
@@ -230,10 +230,12 @@ class visit_functions(ast.NodeVisitor):
                     n = int(arg.value)
                     nasm.append(f'  push {arg.value}')
                 except:
-                     # func(var)
-                    pos = self.vars.get_pos(self.current_func, arg.value)
-                    nasm.append(f'  mov rdi, qword [rbp-{pos}]')
-                    nasm.append(f'  push rdi')
+                    # func('mystr')
+                    str_param = f'str_param{lbl}'
+                    lbl += 1
+                    nasm.append(f'  call {str_param}')
+                    nasm.append(f'  db "{arg.value}",0')
+                    nasm.append(f'{str_param}:')
 
 
             elif isinstance(arg, ast.Name):  # vars
