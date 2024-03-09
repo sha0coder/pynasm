@@ -152,7 +152,7 @@ class visit_functions(ast.NodeVisitor):
 
             elif node.func.id in regs64:
                 # rax('test',123)
-                # call reg64 -> use 64bits calling convention
+                # indirect function call reg64 -> use 64bits calling convention
 
                 l = len(node.args)
                 if l >= 1:
@@ -594,10 +594,18 @@ class visit_functions(ast.NodeVisitor):
                             elif left == ' al' and right == ' bl':
                                 pass
                             elif left == ' al' and right != ' bl':
-                                nasm.append(f'  mov bl, byte \'{right}\'')
+                                try:
+                                    n = int(right)
+                                    nasm.append(f'  mov bl, byte {right}')
+                                except:
+                                    nasm.append(f'  mov bl, byte \'{right}\'')
                                 right = ' bl'
                             elif left != ' al' and right == ' bl':
-                                nasm.append(f'  mov al, byte \'{left}\'')
+                                try:
+                                    n = int(left)
+                                    nasm.append(f'  mov al, byte {left}')
+                                except:
+                                    nasm.append(f'  mov al, byte \'{left}\'')
                                 left = ' al'
                             else:
                                 unimiplemented("imposible case")

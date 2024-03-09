@@ -7,9 +7,13 @@ def substrings():
     al = s[i]
     rbx = len(s)
     s[i] = bl
-    '''
-    TODO: if s[3] == 0x41:
-    '''
+
+    if s[3] == 0x00:
+        asm('  int 3')
+        return 1
+
+    if s[3] == 'l':
+        return 1
     return 0
 
 def arrays():
