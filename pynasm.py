@@ -151,13 +151,27 @@ class visit_functions(ast.NodeVisitor):
                     return
 
             elif node.func.id in regs64:
+                # rax('test',123)
                 # call reg64 -> use 64bits calling convention
 
                 l = len(node.args)
                 if l >= 1:
                     arg = node.args[0]
                     if isinstance(arg, ast.Constant):  # constants 
-                        arg = arg.value
+                        try:
+                            # rax(123)
+                            n = int(arg.value)
+                            arg = arg.value
+                        except:
+                            # rax('test')
+                            label = f'str_arg{lbl}'
+                            lbl += 1
+                            nasm.append(f'  call {label}')
+                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(f'{label}:')
+                            arg = 'rdi'
+                            nasm.append(f'  pop {arg}')
+
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
                         if not is_reg(arg):
@@ -168,7 +182,19 @@ class visit_functions(ast.NodeVisitor):
                 if l >= 2:
                     arg = node.args[1]
                     if isinstance(arg, ast.Constant):  # constants 
-                        arg = arg.value
+                        try:
+                            # rax(1,123)
+                            n = int(arg.value)
+                            arg = arg.value
+                        except:
+                            # rax(1,'test')
+                            label = f'str_arg{lbl}'
+                            lbl += 1
+                            nasm.append(f'  call {label}')
+                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(f'{label}:')
+                            arg = 'rdi'
+                            nasm.append(f'  pop {arg}')
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
                         if not is_reg(arg):
@@ -179,7 +205,19 @@ class visit_functions(ast.NodeVisitor):
                 if l >= 3:
                     arg = node.args[2]
                     if isinstance(arg, ast.Constant):  # constants 
-                        arg = arg.value
+                        try:
+                            # rax(1,1,123)
+                            n = int(arg.value)
+                            arg = arg.value
+                        except:
+                            # rax(1,1,'test')
+                            label = f'str_arg{lbl}'
+                            lbl += 1
+                            nasm.append(f'  call {label}')
+                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(f'{label}:')
+                            arg = 'rdi'
+                            nasm.append(f'  pop {arg}')
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
                         if not is_reg(arg):
@@ -190,7 +228,19 @@ class visit_functions(ast.NodeVisitor):
                 if l >= 4:
                     arg = node.args[3]
                     if isinstance(arg, ast.Constant):  # constants 
-                        arg = arg.value
+                        try:
+                            # rax(1,1,1,123)
+                            n = int(arg.value)
+                            arg = arg.value
+                        except:
+                            # rax(1,1,1,'test')
+                            label = f'str_arg{lbl}'
+                            lbl += 1
+                            nasm.append(f'  call {label}')
+                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(f'{label}:')
+                            arg = 'rdi'
+                            nasm.append(f'  pop {arg}')
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
                         if not is_reg(arg):
@@ -201,8 +251,18 @@ class visit_functions(ast.NodeVisitor):
                 if l > 4:
                     for arg in reversed(node.args[4:]):
                         if isinstance(arg, ast.Constant):  # constants 
-                            arg = arg.value
-                            nasm.append(f'  push {arg}')
+                            try:
+                                # rax(123)
+                                n = int(arg.value)
+                                arg = arg.value
+                                nasm.append(f'  push {arg}')
+                            except:
+                                # rax('test')
+                                label = f'str_arg{lbl}'
+                                lbl += 1
+                                nasm.append(f'  call {label}')
+                                nasm.append(f'  db "{arg.value}", 0')
+                                nasm.append(f'{label}:')
                         elif isinstance(arg, ast.Name):  # vars
                             arg = arg.id
                             if is_reg(arg):
