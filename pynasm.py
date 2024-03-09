@@ -225,11 +225,22 @@ class visit_functions(ast.NodeVisitor):
 
         for arg in reversed(node.args):
             if isinstance(arg, ast.Constant):  # constants 
-                nasm.append(f'  push {arg.value}')
+                try:
+                    # func(123)
+                    n = int(arg.value)
+                    nasm.append(f'  push {arg.value}')
+                except:
+                     # func(var)
+                    pos = self.vars.get_pos(self.current_func, arg.value)
+                    nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                    nasm.append(f'  push rdi')
+
+
             elif isinstance(arg, ast.Name):  # vars
                 if is_reg(arg.id):
                     nasm.append(f'  push {arg.id}')
                 else:
+                    # func(var)
                     pos = self.vars.get_pos(self.current_func, arg.id)
                     nasm.append(f'  mov rdi, qword [rbp-{pos}]')
                     nasm.append(f'  push rdi')

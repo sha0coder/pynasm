@@ -5,6 +5,8 @@ runtime2
 runtime2.py
 bkp/
 test
+test.py
+test.nasm
 apicall2
 apicall
 arithmetic

@@ -34,7 +34,7 @@ def names_and_pointers():
     return 0
 
 
-def get_api(rdx, rcx): # rdx: api_name rcx: api_size
+def get_kernel32_api(rdx, rcx): # rdx: api_name rcx: api_size
     rax = 0
     while True:
         rdi = 0
@@ -50,6 +50,23 @@ def get_api(rdx, rcx): # rdx: api_name rcx: api_size
             return rax
         pop(rcx)
         eax += 1
+
+
+def get_api(lib, name):
+    runtime()
+    str_load = 'LoadLibraryA'
+    len_load = len(str_load)
+    str_proc = 'GetProcAddress'
+    len_proc = len(str_proc)
+    ptr_load = get_kernel32_api(str_load, len_load)
+    ptr_proc = get_kernel32_api(str_proc, len_proc)
+    rax = ptr_load
+    asm(' int 3')
+    hndl = rax(lib)
+    rax = ptr_proc
+    ptr = rax(hdnl, name)
+    return ptr
+
 
 
 def resolve_addr():
