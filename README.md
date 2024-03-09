@@ -65,6 +65,12 @@ check the examples folder.
 ![emulation](pics/api_call4.png)
 
 
+### Arrays and memory blobs 
+
+
+![arrays](pics/arrays.png)
+
+
 ## TODO:
 
 - complex ifs and/or
