@@ -2,8 +2,8 @@
 *.nasm
 runtime
 runtime2
-runtime2.py
 bkp/
+winapi
 test
 test.py
 test.nasm
