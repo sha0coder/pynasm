@@ -1,4 +1,4 @@
-import runtime2
+import winapi
 
 def main():
     msgbox = get_api('user32.dll','MessageBoxA')

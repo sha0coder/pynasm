@@ -166,3 +166,125 @@ def main():
     r = sum(100, 200)
     return r
 ```
+
+### String parse
+
+```python
+def get(s, pos):
+    return s[pos]
+
+def main():
+    c = get('my string', 4)
+    s = '1234'
+    rax = 0x41
+    s[3] = al
+    return 0
+```
+
+### Raw assembly
+
+```python
+
+def trap():
+    asm('  int 3')
+
+def main():
+    rax = 3
+    asm('  cpuid')
+    trap()
+    return 0
+```
+
+
+### Indirect function call
+
+for calling pointers ie winapi calls
+
+```python
+def main():
+    ptr = 0x12123123
+    rax = ptr
+    r = rax(1)
+    return 0
+```
+
+
+### Importing other files
+
+pynasm look for imported files in current folder
+
+```python
+import helper
+
+def main():
+    function_on_helper()
+```
+
+This compile both .py files in one .nasm file
+
+### Xor operation
+
+Xors to remove a register:
+
+```python
+def main():
+    rax = rbx = rcx = 0
+```
+
+Xor logic operation to encode/encrypt or whatever
+
+```python
+def main():
+    a = 0x3fa498
+    b = 0x234234
+    a ^= b
+```
+
+```python
+def encrypt(d, l, key):
+    buff = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    rbx = key
+    for i in range(l):
+        al = d[i]
+        al ^= bl
+        buff[i] = al
+    return buff
+
+
+def main():
+    d = 'decrypted text'
+    l = len(d)
+    key = 0x32
+    e = encrypt(d, l, key)
+    return e
+```
+
+scemu emulator:
+```assembly
+202 0x3c00cf: mov   rax,[rbp-20h]
+=>
+203 0x3c00d3: leave
+=>r rax
+	rax: 0x3c002f 3932207 'VWQ@KBFWV' (code)
+```
+
+len() has to be done from same function where the string was defined, but you can implement your own length() function that checks the 0x00 at the end of the string.
+
+
+### Allocator
+
+don't expect an allocator on a PIC code, use winapi VirtualAlloc importing winapi
+
+```python
+import winapi
+
+def main():
+    valloc = get_api('kernel32.dll','VirtuallAlloc')
+    # ...
+    rax = valloc
+    size = 1024
+    rax(0, size, 0x00001000, 0x40)
+    return 0
+```
+
+
