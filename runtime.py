@@ -1,4 +1,6 @@
-
+'''
+    deprecated, use: import winapi
+'''
 
 def get_kernel32():
     rdi = rax = rdx = 0
