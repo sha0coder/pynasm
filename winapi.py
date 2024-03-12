@@ -63,7 +63,7 @@ def get_api(lib, name):
     rax = ptr_load
     hndl = rax(lib)
     rax = ptr_proc # ebp-40h
-    ptr = rax(hdnl, name)
+    ptr = rax(hndl, name)
     return ptr
 
 

@@ -46,6 +46,10 @@ class LocalVars:
     def add(self, var):
         self.vars.append(var)
 
+    def dump(self):
+        for var in self.vars:
+            print(f'{var.func} {var.name}')
+
     def get_str(self, func, name):
         for var in self.vars:
             #print(f' if {var.func} == {func} and {var.name} == {name}:')
@@ -54,12 +58,16 @@ class LocalVars:
                 return var.str
         return None
     
-    def get_pos(self, func, name, s=None):
+    def get_pos(self, func, name, s=None, dbg=False):
         for var in self.vars:
+            if dbg:
+                print(f'if "{var.func}" == "{func}" and "{var.name}" == "{name}"')
             if var.func == func and var.name == name:
                 if s:
                     var.str = s
                 return var.pos * 8 + 8
+        if dbg:
+            print(f'new {func} {name}')
         pos = self.get_next_pos(func)
         self.add( Var(func, name, pos, s) )
         return pos * 8 + 8
@@ -109,7 +117,7 @@ class visit_functions(ast.NodeVisitor):
             else:
                 pos = self.vars.get_pos(self.current_func, arg.arg)
                 nasm.append(f'  mov rdi, qword [rbp+{i}]')
-                nasm.append(f'  mov qword [rbp-{pos}], rdi')
+                nasm.append(f'  mov qword [rbp-{pos}], rdi ; {arg.arg}')
 
             i += 8
         self.generic_visit(node)
@@ -173,10 +181,11 @@ class visit_functions(ast.NodeVisitor):
                             nasm.append(f'  pop {arg}')
 
                     elif isinstance(arg, ast.Name):  # vars
+                        # rax(var)
                         arg = arg.id
                         if not is_reg(arg):
                             pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}]'
+                            arg = f'qword [rbp-{pos}] ; {arg}'
                     if arg != 'rcx':
                         nasm.append(f'  mov rcx, {arg}')
                 if l >= 2:
@@ -269,8 +278,8 @@ class visit_functions(ast.NodeVisitor):
                                 nasm.append(f'  push {arg}')
                             else:
                                 pos = self.vars.get_pos(self.current_func, arg)
-                                arg = f'qword [rbp-{pos}]'
-                                nasm.append(f'  mov edi, {arg}')
+                                arg2 = f'qword [rbp-{pos}]'
+                                nasm.append(f'  mov edi, {arg2} ; {arg}')
                                 nasm.append(f'  push edi')
 
                         else:
@@ -304,7 +313,7 @@ class visit_functions(ast.NodeVisitor):
                 else:
                     # func(var)
                     pos = self.vars.get_pos(self.current_func, arg.id)
-                    nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                    nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {arg.id}')
                     nasm.append(f'  push rdi')
 
 
@@ -336,16 +345,20 @@ class visit_functions(ast.NodeVisitor):
         global nasm
         if isinstance(node.value, ast.Constant):
             if node.value.value == 0:
+                # return 0
                 nasm.append(f'  xor rax, rax')
             else:
+                # return 123
                 nasm.append(f'  mov rax, {node.value.value}')
         elif isinstance(node.value, ast.Name):
             if is_reg(node.value.id):
                 if node.value.id != 'rax':
+                    # return rbx
                     nasm.append(f'  mov rax, {node.value.id}')
             else:
+                # return var
                 pos = self.vars.get_pos(self.current_func, node.value.id)
-                nasm.append(f'  mov rax, [rbp-{pos}]')
+                nasm.append(f'  mov rax, [rbp-{pos}] ; {node.value.id}')
         else:
             unimplemented('return '+node.value)
         nasm.append('  leave')
@@ -525,14 +538,14 @@ class visit_functions(ast.NodeVisitor):
                             if isinstance(left.slice, ast.Constant):
                                 # if a[0] == 3
                                 idx = left.slice.value
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
                                 nasm.append(f'  mov al, byte [rsi+{idx}]')
                             else:
                                 # if a[i] == 3
                                 idx = left.slice.id
                                 pos2 = self.vars.get_pos(self.current_func, idx)
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
-                                nasm.append(f'  mov rdi, qword [rbp-{pos2}]')
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
+                                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {idx}')
                                 nasm.append(f'  mov al, byte [rsi+rdi]')
                             left = ' al'
 
@@ -543,14 +556,14 @@ class visit_functions(ast.NodeVisitor):
                             if isinstance(left.slice, ast.Constant):
                                 # if a[0] == ...
                                 idx = right.slice.value
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
                                 nasm.append(f'  mov bl, byte [rsi]')
                             else:
                                 # if a[i] == ...
                                 idx = right.slice.id
                                 pos2 = self.vars.get_pos(self.current_func, idx)
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}]')
-                                nasm.append(f'  mov rdi, qword [rbp-{pos2}]')
+                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
+                                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {idx}')
                                 nasm.append(f'  mov bl, byte [rsi+rdi]')
                             right = ' bl'
 
@@ -585,11 +598,11 @@ class visit_functions(ast.NodeVisitor):
                             if left != ' al' and right != ' bl':
                                 # if a == b: 64bits compare
                                 pos1 = self.vars.get_pos(self.current_func, left)
-                                nasm.append(f'  mov rsi, [rbp-{pos1}]')
+                                nasm.append(f'  mov rsi, [rbp-{pos1}] ; {left}')
                                 left = 'rsi'
 
                                 pos2 = self.vars.get_pos(self.current_func, right)
-                                nasm.append(f'  mov rdi, [rbp-{pos2}]')
+                                nasm.append(f'  mov rdi, [rbp-{pos2}] ; {right}')
                                 right = 'rdi'
                             elif left == ' al' and right == ' bl':
                                 pass
@@ -671,13 +684,13 @@ class visit_functions(ast.NodeVisitor):
                             # arr[i] = 0
                             idx = target.slice.id
                             pos2 = self.vars.get_pos(self.current_func, idx)
-                            nasm.append(f'  mov rsi, qword [rbp-{pos2}]')
-                            nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                            nasm.append(f'  mov rsi, qword [rbp-{pos2}] ; {idx}')
+                            nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.value.id}')
                             nasm.append(f'  mov byte [rdi+rsi], 0')
                         else:
                             # arr[3] = 0
                             idx = target.slice.value
-                            nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                            nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.value.id}')
                             nasm.append(f'  mov byte [rdi+{idx}], 0') 
                     else:
                         if is_reg(target.id):
@@ -686,7 +699,7 @@ class visit_functions(ast.NodeVisitor):
                         else:
                             # var = 0
                             pos = self.vars.get_pos(self.current_func, target.id)
-                            nasm.append(f'  mov qword [rbp-{pos}], 0')
+                            nasm.append(f'  mov qword [rbp-{pos}], 0 ; {target.id}')
                 else:
                     # value nonzero
 
@@ -699,7 +712,7 @@ class visit_functions(ast.NodeVisitor):
                             pos = self.vars.get_pos(self.current_func, var)
                             val = node.value.value
 
-                            nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                            nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {var}')
                             nasm.append(f'  mov byte [rdi+{idx}], {val}')
 
 
@@ -711,8 +724,8 @@ class visit_functions(ast.NodeVisitor):
                             pos1 = self.vars.get_pos(self.current_func, idx)
                             val = node.value.value
 
-                            nasm.append(f'  mov rdi, qword [rbp-{pos}]')
-                            nasm.append(f'  mov rsi, qword [rbp-{pos2}]')
+                            nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {var}')
+                            nasm.append(f'  mov rsi, qword [rbp-{pos2}] ; {idx}')
                             nasm.append(f'  mov byte [rdi+rsi], {val}')
 
                     else:
@@ -724,7 +737,7 @@ class visit_functions(ast.NodeVisitor):
                             else:
                                 # var = 3
                                 pos = self.vars.get_pos(self.current_func, target.id)
-                                nasm.append(f'  mov qword [rbp-{pos}], {node.value.value}')
+                                nasm.append(f'  mov qword [rbp-{pos}], {node.value.value} ; {target.id}')
                         except Exception as e:
                             # strings  s = 'hello'
                             nasm.append(f'  call lbl{lbl}')
@@ -736,7 +749,7 @@ class visit_functions(ast.NodeVisitor):
                             else:
                                 pos = self.vars.get_pos(self.current_func, target.id, node.value.value)
                                 nasm.append(f'  pop rdi')
-                                nasm.append(f'  mov [rbp-{pos}], rdi')
+                                nasm.append(f'  mov [rbp-{pos}], rdi ; {target.id}')
 
             elif isinstance(node.value, ast.Name):
                 if node.value.id == 'PEB':
@@ -748,7 +761,7 @@ class visit_functions(ast.NodeVisitor):
                         # the_peb = PEB
                         pos = self.vars.get_pos(self.current_func, target.id)
                         nasm.append(f'  mov rsi, gs:[rdi+0x60]')
-                        nasm.append(f'  mov qword [rbp-{pos}], rsi')
+                        nasm.append(f'  mov qword [rbp-{pos}], rsi ; {target.id}')
 
                 else:
                     if isinstance(target, ast.Subscript):
@@ -759,14 +772,14 @@ class visit_functions(ast.NodeVisitor):
                         if isinstance(target.slice, ast.Constant):
                             # var[3] = al
                             idx = target.slice.value
-                            nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                            nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.value.id}')
                             nasm.append(f'  mov [rdi+{idx}], {val}')
                         elif isinstance(target.slice, ast.Name):
                             # var[i] = al
                             idx = target.slice.id
                             pos2 = self.vars.get_pos(self.current_func, idx)
-                            nasm.append(f'  mov rsi, [rbp-{pos2}]')
-                            nasm.append(f'  mov rdi, [rbp-{pos}]')
+                            nasm.append(f'  mov rsi, [rbp-{pos2}] ; {idx}')
+                            nasm.append(f'  mov rdi, [rbp-{pos}] ; {target.value.id}')
                             nasm.append(f'  mov [rdi+rsi], {val}') 
                         else:
                             unimplemented('weird array[] = reg')
@@ -778,10 +791,10 @@ class visit_functions(ast.NodeVisitor):
                                 nasm.append(f'  mov {target.id}, {node.value.id}')
                             elif not is_reg(target.id) and is_reg(node.value.id):
                                 pos = self.vars.get_pos(self.current_func, target.id)
-                                nasm.append(f'  mov qword [rbp-{pos}], {node.value.id}')
+                                nasm.append(f'  mov qword [rbp-{pos}], {node.value.id} ; {target.id}')
                             elif is_reg(target.id) and not is_reg(node.value.id):
                                 pos = self.vars.get_pos(self.current_func, node.value.id)
-                                nasm.append(f'  mov {target.id}, qword [rbp-{pos}]')
+                                nasm.append(f'  mov {target.id}, qword [rbp-{pos}] ; {node.value.id}')
                         else:
                             unimplemented("var = var not alowed, so does eax = eax")
 
@@ -857,16 +870,16 @@ class visit_functions(ast.NodeVisitor):
                     pos = self.vars.get_pos(self.current_func, var)
                     if isinstance(node.value.slice, ast.Constant):
                         idx = node.value.slice.value
-                        nasm.append(f'  mov rsi, [rbp-{pos}]')
+                        nasm.append(f'  mov rsi, [rbp-{pos}] ; {var}')
                         nasm.append(f'  mov {target.id}, byte [rsi+{idx}]')
                     elif isinstance(node.value.slice, ast.Name):
                         idx = node.value.slice.id
-                        nasm.append(f'  mov rsi, [rbp-{pos}]')
+                        nasm.append(f'  mov rsi, [rbp-{pos}] ; {var}')
                         if is_reg(idx):
                             nasm.append(f'  mov rdi, {idx}')
                         else:
                             pos2 = self.vars.get_pos(self.current_func, idx)
-                            nasm.append(f'  mov rdi, [rbp-{pos2}]')
+                            nasm.append(f'  mov rdi, [rbp-{pos2}] ; {idx}')
                         nasm.append(f'  mov {target.id}, byte [rsi+rdi]')
 
                     else:
@@ -877,7 +890,7 @@ class visit_functions(ast.NodeVisitor):
                 self.generic_visit(node)
                 if isinstance(target, ast.Subscript):
                     pos = self.vars.get_pos(self.current_func, target.slice.id)
-                    nasm.append(f'  mov rdi, qword [rbp-{pos}]')
+                    nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.slice.id}')
                     nasm.append(f'  mov qword [rdi], rax')
 
                 else:
@@ -885,7 +898,7 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov {target.id}, rax')
                     else:
                         pos = self.vars.get_pos(self.current_func, target.id)
-                        nasm.append(f'  mov [ebp-{pos}], rax')
+                        nasm.append(f'  mov [rbp-{pos}], rax ; {target.id}')
                 return
 
 
@@ -909,7 +922,7 @@ class visit_functions(ast.NodeVisitor):
                     else:
                         pos = self.vars.get_pos(self.current_func, target.id, 'A'*len(node.value.elts))
                         nasm.append(f'  pop rdi')
-                        nasm.append(f'  mov qword [rbp-{pos}], rdi')
+                        nasm.append(f'  mov qword [rbp-{pos}], rdi ; {target.id}')
 
 
             else:
@@ -926,7 +939,7 @@ class visit_functions(ast.NodeVisitor):
 
         if not is_reg(reg):
             pos = self.vars.get_pos(self.current_func, reg)
-            reg = f'qword [rbp-{pos}]'
+            reg = f'qword [rbp-{pos}] ; {reg}'
 
         if isinstance(node.value, ast.Name):
             val = node.value.id
@@ -935,7 +948,7 @@ class visit_functions(ast.NodeVisitor):
                     unimplemented("canot do operation with var <operator> var")
                 else:
                     pos = self.vars.get_pos(self.current_func, val)
-                    val = f'qword [rbp-{pos}]'
+                    val = f'qword [rbp-{pos}] ; {val}'
 
 
         elif isinstance(node.value, ast.Constant):
