@@ -17,10 +17,23 @@ Don't use this for creating malicious payloads!
 
 ## Usage
 
+generating a relocatable 64bits code blob
+
 ```bash
 python3 pynasm.py shellcode.py
 nasm -f bin shellcode.nasm
+ls shellcode
 ```
+
+or generating an 64bits exe 
+
+```hash
+python3 pynasm.py program.py
+nasm -f win64 program.nasm
+x86_64-w64-mingw32-ld program.obj
+ls a.exe
+```
+
 
 ## Emulate with SCEMU for testing
 
