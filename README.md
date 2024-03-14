@@ -86,6 +86,10 @@ check the examples folder.
 ![arrays](pics/arrays.png)
 
 
+## Documentation
+
+https://github.com/sha0coder/pynasm/blob/main/DOCUMENTAITON.md
+
 ## TODO:
 
 - complex ifs and/or
