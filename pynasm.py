@@ -81,6 +81,25 @@ class LocalVars:
            
 
 
+def align_stack(pos):
+    global nasm, lbl
+    nasm.append(f'  mov [rbp-{pos}], rsp')
+    nasm.append(f'  and rsp, 0xfffffffffffffff0')
+    '''
+    need_adjust = f'need_adjust{lbl}'
+    lbl += 1
+    dont_need = f'dont_need_adjust{lbl}'
+    lbl += 1
+
+    nasm.append(f'  push rsp')
+    nasm.append(f'  test rsp, 0xf')
+    nasm.append(f'  jnz {need_adjust}')
+    nasm.append(f'  jmp {dont_need}')
+    nasm.append(f'{need_adjust}:')
+    nasm.append(f'  sub rsp, 8')
+    nasm.append(f'{dont_need}:')
+    '''
+   
 
 
 class visit_functions(ast.NodeVisitor):
@@ -161,6 +180,10 @@ class visit_functions(ast.NodeVisitor):
             elif node.func.id in regs64:
                 # rax('test',123)
                 # indirect function call reg64 -> use 64bits calling convention
+               
+                # save previous stack and align rsp to 16
+                pos = self.vars.get_pos(self.current_func, 'rsp')
+                align_stack(pos)
 
                 l = len(node.args)
                 if l >= 1:
@@ -207,8 +230,9 @@ class visit_functions(ast.NodeVisitor):
                     elif isinstance(arg, ast.Name):  # vars
                         arg = arg.id
                         if not is_reg(arg):
+                            # rax(1,var)
                             pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}]'
+                            arg = f'qword [rbp-{pos}] ; {arg}'
                     if arg != 'rdx':
                         nasm.append(f'  mov rdx, {arg}')
                 if l >= 3:
@@ -231,7 +255,7 @@ class visit_functions(ast.NodeVisitor):
                         arg = arg.id
                         if not is_reg(arg):
                             pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}]'
+                            arg = f'qword [rbp-{pos}] ; {arg}'
                     if arg != 'r8':
                         nasm.append(f'  mov r8, {arg}')
                 if l >= 4:
@@ -254,7 +278,7 @@ class visit_functions(ast.NodeVisitor):
                         arg = arg.id
                         if not is_reg(arg):
                             pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}]'
+                            arg = f'qword [rbp-{pos}] ; {arg}'
                     if arg != 'r9':
                         nasm.append(f'  mov r9, {arg}')
                 if l > 4:
@@ -286,8 +310,14 @@ class visit_functions(ast.NodeVisitor):
                             unimplemented("call with more than 4 args in weird param")
 
                 nasm.append(f'  call {node.func.id}')
+
+                # restore previous stack
+                pos = self.vars.get_pos(self.current_func, 'rsp')
+                nasm.append(f'  mov rsp, [rbp-{pos}]')
+                '''
                 if len(node.args) > 0:
                     nasm.append(f'  add rsp, {len(node.args) * 8}')
+                '''
                 return
 
 
@@ -984,12 +1014,21 @@ def main(pyfile):
 
     tree = ast.parse(open(pyfile).read())
 
+    win64_mode = False
+    if 'exe' in sys.argv:
+        win64_mode = True
+
     
     visitor = visit_functions()
     visitor.visit(tree)
 
     nasmfile = pyfile.replace('.py','.nasm')
-    open(nasmfile,'w').write('; python compiled with pynasm\n\nBITS 64\n\ncall main\njmp end\n'+'\n'.join(nasm)+'\n\nend:')
+    if win64_mode:
+        code ='; python compiled with pynasm\n\nBITS 64\n\nglobal _start\nsection .text\n\n_start:\n  call main\n  jmp end\n'+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+    else:
+        code ='; python compiled with pynasm\n\nBITS 64\n\ncall main\njmp end\n'+'\n'.join(nasm)+'\n\nend: int 3' 
+
+    open(nasmfile,'w').write(code)
 
 
 

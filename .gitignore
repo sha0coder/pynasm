@@ -24,4 +24,5 @@ raw_asm
 strings_compare
 strings
 xors
-
+calc2
+calc2.py
