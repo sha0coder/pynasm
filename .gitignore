@@ -26,3 +26,6 @@ strings
 xors
 calc2
 calc2.py
+a.exe
+*.exe
+*.obj
