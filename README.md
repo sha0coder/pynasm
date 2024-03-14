@@ -50,9 +50,11 @@ https://www.youtube.com/watch?v=o072bXNtxmg
 check the examples folder.
 
 
-### WinapiAcces using runtime2
+### WinapiAcces importing winapi lib
 
 ![winapi](pics/runtime2.png)
+
+![msgbox](pics/msgbox.png)
 
 
 ### Control blocks
