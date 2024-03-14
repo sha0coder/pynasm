@@ -92,11 +92,11 @@ https://github.com/sha0coder/pynasm/blob/main/DOCUMENTAITON.md
 
 ## TODO:
 
+- modulus with aug assign %=
+- len(s) from a parameter
 - complex ifs and/or
 - elif
 - break
 - continue
 - structures
-
-
 
