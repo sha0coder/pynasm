@@ -28,7 +28,7 @@ ls shellcode
 or generating an 64bits exe 
 
 ```hash
-python3 pynasm.py program.py
+python3 pynasm.py program.py exe
 nasm -f win64 program.nasm
 x86_64-w64-mingw32-ld program.obj
 ls a.exe
