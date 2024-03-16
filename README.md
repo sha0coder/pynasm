@@ -99,4 +99,5 @@ https://github.com/sha0coder/pynasm/blob/main/DOCUMENTAITON.md
 - break
 - continue
 - structures
+- alloc 100 with: padding times 100 db 0x00
 

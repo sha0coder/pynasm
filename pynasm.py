@@ -965,18 +965,27 @@ class visit_functions(ast.NodeVisitor):
 
     def visit_AugAssign(self, node):
         global nasm
-        reg = node.target.id
+        var2var = ()
+        prevreg = reg = node.target.id # dst
 
         if not is_reg(reg):
             pos = self.vars.get_pos(self.current_func, reg)
-            reg = f'qword [rbp-{pos}] ; {reg}'
+            prevreg = reg
+            reg = f'qword [rbp-{pos}]'
 
         if isinstance(node.value, ast.Name):
-            val = node.value.id
+            val = node.value.id # src
             if not is_reg(val):
                 if not is_reg(reg):
-                    unimplemented("canot do operation with var <operator> var")
+                    # var1 += var2
+                    pos2 = self.vars.get_pos(self.current_func, val)
+                    nasm.append(f'  mov rsi, [rbp-{pos2}] ; {val}');
+                    nasm.append(f'  mov rdi, [rbp-{pos}] ; {prevreg}');
+                    val = 'rsi'
+                    reg = 'rdi'
+                    var2var = (pos, pos2) 
                 else:
+                    # var1 += rax
                     pos = self.vars.get_pos(self.current_func, val)
                     val = f'qword [rbp-{pos}] ; {val}'
 
@@ -1004,7 +1013,8 @@ class visit_functions(ast.NodeVisitor):
         else:
             unimplemented(node.op)
 
-        
+        if var2var:
+            nasm.append(f'  mov rsi, [rbp-{var2var[1]}] ; {prevreg}')
 
 
 
