@@ -8,6 +8,7 @@
 
 import sys
 import ast
+import os
 
 STACK_SPACE = 10*8 # space for 10 local vars
 nasm = []
@@ -22,7 +23,7 @@ xmm = ['xmm0','xmm1','xmm2','xmm3','xmm4','xmm5','xmm6','xmm7','xmm8','xmm9','xm
 ymm = ['ymm0','ymm1','ymm2','ymm3','ymm4','ymm5','ymm6','ymm7','ymm8','ymm9','ymm10','ymm11','ymm12','ymm13','ymm14','ymm15']
 
 is_reg = lambda r : r in regs64 or r in regs32 or r in regs16 or r in regs8 or r in xmm or r in ymm
-
+extern = set()
 
 
 def unimplemented(msg): # rust style
@@ -176,6 +177,15 @@ class visit_functions(ast.NodeVisitor):
                     else:
                         unimplemented('len() weird case')
                     return
+            elif node.func.id == 'alloc':
+                sz = node.args[0].id
+                label = f'alloc{lbl}'
+                lbl += 1
+                nasm.append(f'  call {label}')
+                nasm.append(f'  padding times {sz} db 0x00')
+                nasm.append(f'{label}:')
+                nasm.append(f'  pop rax')
+
 
             elif node.func.id in regs64:
                 # rax('test',123)
@@ -349,7 +359,37 @@ class visit_functions(ast.NodeVisitor):
 
         if isinstance(node.func, ast.Name):
             fname = node.func.id
-            nasm.append(f'  call {fname}')
+            if fname.startswith('libc_'):
+                l = len(node.args)
+                sym = fname[5:]
+                extern.add(sym)
+                if l >= 1:
+                    nasm.append(f'  pop rdi')
+                if l >= 2:
+                    nasm.append(f'  pop rsi')
+                if l >= 3:
+                    nasm.append(f'  pop rdx')
+                if l >= 4:
+                    nasm.append(f'  pop rcx')
+                if l >= 5:
+                    nasm.append(f'  pop r8')
+                if l >= 6:
+                    nasm.append(f'  pop r9')
+                nasm.append(f'  call {sym}')
+                if l >= 1:
+                    nasm.append(f'  push rdi')
+                if l >= 2:
+                    nasm.append(f'  push rsi')
+                if l >= 3:
+                    nasm.append(f'  push rdx')
+                if l >= 4:
+                    nasm.append(f'  push rcx')
+                if l >= 5:
+                    nasm.append(f'  push r8')
+                if l >= 6:
+                    nasm.append(f'  push r9')
+            else:
+                nasm.append(f'  call {fname}')
 
         elif isinstance(node.func, ast.Attribute):
             fname = node.func.attr
@@ -529,7 +569,7 @@ class visit_functions(ast.NodeVisitor):
                         if pos > 0:
                             nasm.append(f'  mov qword [rbp-{pos}], {reg}')
                         nasm.append(f'  cmp {reg}, {range_max}')
-                        nasm.append(f'  jle {for_lbl}')
+                        nasm.append(f'  jl {for_lbl}')
 
 
             else:
@@ -771,7 +811,8 @@ class visit_functions(ast.NodeVisitor):
                         except Exception as e:
                             # strings  s = 'hello'
                             nasm.append(f'  call lbl{lbl}')
-                            nasm.append(f'  db "{node.value.value}",0')
+                            s = node.value.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
+                            nasm.append(f'  db "{s}",0')
                             nasm.append(f'lbl{lbl}:')
                             lbl += 1
                             if is_reg(target.id):
@@ -1005,7 +1046,7 @@ class visit_functions(ast.NodeVisitor):
             nasm.append(f'  mul {reg}')
         elif isinstance(node.op, ast.Div):
             nasm.append(f'  xor rdx, rdx')
-            nasm.append(f'  mov eax, {reg}')
+            nasm.append(f'  mov rax, {reg}')
             nasm.append(f'  mov {reg}, {val}')
             nasm.append(f'  div {reg}')
         elif isinstance(node.op, ast.BitXor):
@@ -1025,8 +1066,14 @@ def main(pyfile):
     tree = ast.parse(open(pyfile).read())
 
     win64_mode = False
+    lin64_mode = False
+    raw64_mode = False
     if 'exe' in sys.argv:
         win64_mode = True
+    elif 'elf' in sys.argv:
+        lin64_mode = True
+    elif '64' in sys.argv:
+        raw64_mode = True
 
     
     visitor = visit_functions()
@@ -1034,13 +1081,58 @@ def main(pyfile):
 
     nasmfile = pyfile.replace('.py','.nasm')
     if win64_mode:
-        code ='; python compiled with pynasm\n\nBITS 64\n\nglobal _start\nsection .text\n\n_start:\n  call main\n  jmp end\n'+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+        code ='''
+; python compiled with pynasm
+bits 64
+default rel
+global _start
+section .text
+_start:
+    call main
+    jmp end
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+    elif lin64_mode:
+        code ='''
+; python compiled with pynasm
+bits 64
+default rel
+'''
+        for e in extern:
+            code+=f'extern {e}\n'
+        code+='''
+global main
+section .text
+
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+    elif raw64_mode:
+        code ='''
+; python compiled with pynasm
+bits 64
+default rel
+call main
+jmp end
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
     else:
-        code ='; python compiled with pynasm\n\nBITS 64\n\ncall main\njmp end\n'+'\n'.join(nasm)+'\n\nend: int 3' 
+        code ='''
+; python compiled with pynasm
+bits 32
+default rel
+call main
+jmp end
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+
+
 
     open(nasmfile,'w').write(code)
-
-
+    if win64_mode:
+        os.system(f'nasm -f win64 {nasmfile} -o {nasmfile.replace(".nasm",".obj")}')
+        os.system(f'x86_64-w64-mingw32-ld {nasmfile.replace(".nasm",".obj")} -o {pyfile.replace(".py", ".exe")} -e main')
+    elif lin64_mode:
+        os.system(f'nasm -f elf64 {nasmfile} -o {nasmfile.replace(".nasm",".o")}')
+        os.system(f'gcc {nasmfile.replace(".nasm",".o")} -o {pyfile.replace(".py", "")} -no-pie')
+    elif raw64_mode:
+        os.system(f'nasm -f bin {nasmfile} -o {nasmfile.replace(".nasm",".bin")}')
+        
 
 main(sys.argv[1])
 
