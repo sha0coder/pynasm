@@ -783,7 +783,7 @@ class visit_functions(ast.NodeVisitor):
                             val = node.value.value
 
                             nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {var}')
-                            nasm.append(f'  mov byte [rdi+{idx}], {val}')
+                            nasm.append(f'  mov byte [rdi+{idx}], {val} ')
 
 
                         elif isinstance(target.slice, ast.Name):
@@ -872,7 +872,10 @@ class visit_functions(ast.NodeVisitor):
 
             elif isinstance(node.value, ast.Subscript):
                 if node.value.value.id == 'mem':
+                    # mem as second argument ... = mem[ ... ]
+
                     if isinstance(node.value.slice, ast.BinOp):
+                        # mem[rax+something]
                         left = node.value.slice.left.id
 
                         if isinstance(node.value.slice.op, ast.Add):
@@ -888,11 +891,14 @@ class visit_functions(ast.NodeVisitor):
 
 
                         if isinstance(node.value.slice.right, ast.Constant):
+                            # mem[rax+3]
                             right = node.value.slice.right.value
-                            nasm.append(f'  mov {target.id}, [{left}{op1}{right}]')
+                            nasm.append(f'  mov {target.id}, [{left}{op1}{right}] ; mem[rax+3]')
+
                         elif isinstance(node.value.slice.right, ast.Name):
+                            # mem[rax+rbx]
                             right = node.value.slice.right.id
-                            nasm.append(f'  mov {target.id}, [{left}{op1}{right}]')
+                            nasm.append(f'  mov {target.id}, [{left}{op1}{right}] ; mem[rax+rbx]')
                         else:
                             if isinstance(node.value.slice.right, ast.BinOp):
                                 # mem[eax+ebx*8]
@@ -919,15 +925,18 @@ class visit_functions(ast.NodeVisitor):
                                 else:
                                     unimplemented('weird memory access operation2')
 
-
-                                nasm.append(f'  mov {target.id}, [{left}{op1}{right_left}{op2}{right_right}]')
+                                nasm.append(f'  mov {target.id}, [{left}{op1}{right_left}{op2}{right_right}] ; mem[rax+rbx*8]')
                             else:
                                 unimplemented('weird assign')
 
 
                     elif isinstance(node.value.slice, ast.Name):
+                        # rax = mem[rbx]
                         reg = node.value.slice.id
-                        nasm.append(f'  mov {target.id}, [{reg}]')
+                        nasm.append(f'  mov {target.id}, [{reg}] ; x = mem[rbx]')
+                    elif isinstance(node.value.slice, ast.Constant):
+                        # rax = mem[0x11223344]
+                        nasm.append(f'  mov {target.id}, qword [0x{node.value.slice.value:x}] ; x = mem[0x11223344]')
                     else:
                         unimplemented(node.value.slice)
                 else:
