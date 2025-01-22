@@ -43,13 +43,14 @@ def get_kernel32_api(rdx, rcx): # rdx: api_name rcx: api_size
         rsi = rdx
         push(rcx)
         if str(rsi) == str(rdi):  # repe cmpsb
-            ax = mem[r12+rax*2]
+            ax = mem[r12+rax*2]  # pynasm bug dont generate this line
+            asm('movzx rax, ax')
             eax = mem[r10+rax*4]
             rax += r8
             push(rbx)
             return rax
         pop(rcx)
-        eax += 1
+        rax += 1
 
 
 def get_api(lib, name):
@@ -69,8 +70,8 @@ def get_api(lib, name):
 
 
 def resolve_addr():
-    ax = mem[r12+rax*2]
-    eax = mem[r10+rax*4]
+    rax = mem[r12+rax*2]
+    rax = mem[r10+rax*4]
     rax += r8
     return rax
 

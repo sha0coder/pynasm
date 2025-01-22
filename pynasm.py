@@ -600,7 +600,7 @@ class visit_functions(ast.NodeVisitor):
                             unimplemented('weird if + call')
 
                     if cmpsb:
-                        nasm.append(f'  repe cmpsb')
+                        nasm.append(f'  rep cmpsb')
                     else:
                         if isinstance(left, ast.Subscript):
                             var = left.value.id 
