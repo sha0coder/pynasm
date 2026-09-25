@@ -23,6 +23,23 @@ xmm = ['xmm0','xmm1','xmm2','xmm3','xmm4','xmm5','xmm6','xmm7','xmm8','xmm9','xm
 ymm = ['ymm0','ymm1','ymm2','ymm3','ymm4','ymm5','ymm6','ymm7','ymm8','ymm9','ymm10','ymm11','ymm12','ymm13','ymm14','ymm15']
 
 is_reg = lambda r : r in regs64 or r in regs32 or r in regs16 or r in regs8 or r in xmm or r in ymm
+
+_to64 = {}
+for _r64, _r32, _r16 in zip(
+    ['rax','rbx','rcx','rdx','rsi','rdi','rbp','rsp'],
+    ['eax','ebx','ecx','edx','esi','edi','rbp','esp'],
+    ['ax','bx','cx','dx','si','di','bp','sp']):
+    _to64[_r32] = _r64
+    _to64[_r16] = _r64
+for _i in range(8,16):
+    _to64[f'r{_i}d'] = f'r{_i}'
+    _to64[f'r{_i}w'] = f'r{_i}'
+    _to64[f'r{_i}l'] = f'r{_i}'
+for _r8 in ['al','ah','bl','bh','cl','ch','dl','dh']:
+    _base = {'a':'rax','b':'rbx','c':'rcx','d':'rdx'}[_r8[0]]
+    _to64[_r8] = _base
+reg_to_64 = lambda r: _to64.get(r, r)
+
 extern = set()
 
 
@@ -107,6 +124,356 @@ class visit_functions(ast.NodeVisitor):
     def __init__(self):
         self.current_func = ''
         self.vars = LocalVars()
+        self.loop_stack = []
+
+
+    def _get_jump(self, op):
+        if isinstance(op, ast.Gt): return 'jg'
+        elif isinstance(op, ast.Lt): return 'jl'
+        elif isinstance(op, ast.LtE): return 'jle'
+        elif isinstance(op, ast.GtE): return 'jge'
+        elif isinstance(op, ast.Eq): return 'je'
+        elif isinstance(op, ast.NotEq): return 'jne'
+        else: unimplemented("comparison operator " + str(op))
+
+    def _invert_jump(self, jmp):
+        inv = {'jg':'jle','jl':'jge','jle':'jg','jge':'jl','je':'jne','jne':'je'}
+        return inv[jmp]
+
+    def _emit_cmp(self, compare):
+        global nasm
+        left = compare.left
+        op = compare.ops[0]
+        right = compare.comparators[0]
+
+        cmpsb = False
+        if isinstance(left, ast.Call) and isinstance(right, ast.Call):
+            if left.func.id == 'str' and right.func.id == 'str':
+                left = left.args[0].id
+                right = right.args[0].id
+                cmpsb = True
+            else:
+                unimplemented('weird if + call')
+
+        if cmpsb:
+            nasm.append(f'  rep cmpsb')
+            return op
+
+        if isinstance(left, ast.Subscript):
+            var = left.value.id
+            pos = self.vars.get_pos(self.current_func, var)
+            if isinstance(left.slice, ast.Constant):
+                idx = left.slice.value
+                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
+                nasm.append(f'  mov al, byte [rsi+{idx}]')
+            else:
+                idx = left.slice.id
+                pos2 = self.vars.get_pos(self.current_func, idx)
+                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
+                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {idx}')
+                nasm.append(f'  mov al, byte [rsi+rdi]')
+            left = ' al'
+
+        if isinstance(right, ast.Subscript):
+            var = right.value.id
+            pos = self.vars.get_pos(self.current_func, var)
+            if isinstance(right.slice, ast.Constant):
+                idx = right.slice.value
+                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
+                nasm.append(f'  mov bl, byte [rsi+{idx}]')
+            else:
+                idx = right.slice.id
+                pos2 = self.vars.get_pos(self.current_func, idx)
+                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
+                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {idx}')
+                nasm.append(f'  mov bl, byte [rsi+rdi]')
+            right = ' bl'
+
+        if not isinstance(left, str):
+            if isinstance(left, ast.Constant):
+                left = left.value
+            else:
+                left = left.id
+
+        if not isinstance(right, str):
+            if isinstance(right, ast.Constant):
+                right = right.value
+            else:
+                right = right.id
+
+        if is_reg(left) and isinstance(right, (int, float)):
+            pass
+        elif isinstance(left, (int, float)) and is_reg(right):
+            nasm.append(f'  mov {reg_to_64(right)}, {right}') if right != reg_to_64(right) else None
+            nasm.append(f'  mov rsi, {left}')
+            left = 'rsi'
+            right = reg_to_64(right)
+        elif is_reg(left) and not is_reg(right) and not isinstance(right, (int, float)):
+            pos = self.vars.get_pos(self.current_func, right)
+            right = f'qword [rbp-{pos}]'
+        elif not is_reg(left) and is_reg(right) and not isinstance(left, (int, float)):
+            pos = self.vars.get_pos(self.current_func, left)
+            left = f'qword [rbp-{pos}]'
+        elif is_reg(left) and is_reg(right):
+            left = reg_to_64(left)
+            right = reg_to_64(right)
+        else:
+            if left != ' al' and right != ' bl':
+                if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                    nasm.append(f'  mov rsi, {left}')
+                    nasm.append(f'  mov rdi, {right}')
+                    left = 'rsi'
+                    right = 'rdi'
+                elif isinstance(left, (int, float)):
+                    if not is_reg(right):
+                        pos = self.vars.get_pos(self.current_func, right)
+                        nasm.append(f'  mov rdi, [rbp-{pos}] ; {right}')
+                        right = 'rdi'
+                    else:
+                        right = reg_to_64(right)
+                    nasm.append(f'  mov rsi, {left}')
+                    left = 'rsi'
+                elif isinstance(right, (int, float)):
+                    if not is_reg(left):
+                        pos = self.vars.get_pos(self.current_func, left)
+                        nasm.append(f'  mov rsi, [rbp-{pos}] ; {left}')
+                        left = 'rsi'
+                    else:
+                        left = reg_to_64(left)
+                else:
+                    pos1 = self.vars.get_pos(self.current_func, left)
+                    nasm.append(f'  mov rsi, [rbp-{pos1}] ; {left}')
+                    left = 'rsi'
+                    pos2 = self.vars.get_pos(self.current_func, right)
+                    nasm.append(f'  mov rdi, [rbp-{pos2}] ; {right}')
+                    right = 'rdi'
+            elif left == ' al' and right == ' bl':
+                pass
+            elif left == ' al' and right != ' bl':
+                try:
+                    n = int(right)
+                    nasm.append(f'  mov bl, byte {right}')
+                except:
+                    nasm.append(f"  mov bl, byte '{right}'")
+                right = ' bl'
+            elif left != ' al' and right == ' bl':
+                try:
+                    n = int(left)
+                    nasm.append(f'  mov al, byte {left}')
+                except:
+                    nasm.append(f"  mov al, byte '{left}'")
+                left = ' al'
+            else:
+                unimplemented("impossible case")
+
+        nasm.append(f'  cmp {left}, {right}')
+        return op
+
+    def _emit_body(self, node, label_if):
+        global nasm, lbl
+        if node.orelse:
+            if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+                label_endif = f'endif{lbl}'
+                lbl += 1
+                label_elif = f'elif{lbl}'
+                lbl += 1
+                nasm.append(f'  jmp {label_elif}')
+                nasm.append(f'\n{label_if}:')
+                for b in node.body:
+                    self.visit(b)
+                nasm.append(f'  jmp {label_endif}')
+                nasm.append(f'\n{label_elif}:')
+                self._visit_if_chain(node.orelse[0], label_endif)
+                nasm.append(f'\n{label_endif}:')
+            else:
+                label_else = f'else{lbl}'
+                lbl += 1
+                label_endif = f'endif{lbl}'
+                lbl += 1
+                nasm.append(f'  jmp {label_else}')
+                nasm.append(f'\n{label_if}:')
+                for b in node.body:
+                    self.visit(b)
+                nasm.append(f'  jmp {label_endif}')
+                nasm.append(f'\n{label_else}:')
+                for e in node.orelse:
+                    self.visit(e)
+                nasm.append(f'\n{label_endif}:')
+        else:
+            label_noif = f'endif{lbl}'
+            lbl += 1
+            nasm.append(f'  jmp {label_noif}')
+            nasm.append(f'\n{label_if}:')
+            for b in node.body:
+                self.visit(b)
+            nasm.append(f'\n{label_noif}:')
+
+    def _visit_if_chain(self, node, label_endif):
+        global nasm, lbl
+        label_if = f'if{lbl}'
+        lbl += 1
+
+        self._emit_if_test(node.test, label_if)
+
+        if node.orelse:
+            if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+                label_elif = f'elif{lbl}'
+                lbl += 1
+                nasm.append(f'  jmp {label_elif}')
+                nasm.append(f'\n{label_if}:')
+                for b in node.body:
+                    self.visit(b)
+                nasm.append(f'  jmp {label_endif}')
+                nasm.append(f'\n{label_elif}:')
+                self._visit_if_chain(node.orelse[0], label_endif)
+            else:
+                label_else = f'else{lbl}'
+                lbl += 1
+                nasm.append(f'  jmp {label_else}')
+                nasm.append(f'\n{label_if}:')
+                for b in node.body:
+                    self.visit(b)
+                nasm.append(f'  jmp {label_endif}')
+                nasm.append(f'\n{label_else}:')
+                for e in node.orelse:
+                    self.visit(e)
+        else:
+            nasm.append(f'  jmp {label_endif}')
+            nasm.append(f'\n{label_if}:')
+            for b in node.body:
+                self.visit(b)
+
+    def _emit_if_test(self, test, label_if):
+        global nasm, lbl
+        if isinstance(test, ast.Compare) and \
+                len(test.ops) == 1 and \
+                len(test.comparators) == 1:
+            op = self._emit_cmp(test)
+            jmp = self._get_jump(op)
+            nasm.append(f'  {jmp} {label_if}')
+
+        elif isinstance(test, ast.BoolOp):
+            if isinstance(test.op, ast.And):
+                label_fail = f'andfail{lbl}'
+                lbl += 1
+                for val in test.values:
+                    if isinstance(val, ast.Compare) and len(val.ops) == 1:
+                        op = self._emit_cmp(val)
+                        jmp = self._get_jump(op)
+                        inv = self._invert_jump(jmp)
+                        nasm.append(f'  {inv} {label_fail}')
+                    elif isinstance(val, ast.Name):
+                        if is_reg(val.id):
+                            nasm.append(f'  test {val.id}, {val.id}')
+                        else:
+                            pos = self.vars.get_pos(self.current_func, val.id)
+                            nasm.append(f'  mov rdi, [rbp-{pos}] ; {val.id}')
+                            nasm.append(f'  test rdi, rdi')
+                        nasm.append(f'  jz {label_fail}')
+                    elif isinstance(val, ast.UnaryOp) and isinstance(val.op, ast.Not):
+                        self._emit_truthy_test(val.operand)
+                        nasm.append(f'  jnz {label_fail}')
+                    else:
+                        unimplemented('complex and operand')
+                nasm.append(f'  jmp {label_if}')
+                nasm.append(f'{label_fail}:')
+
+            elif isinstance(test.op, ast.Or):
+                for val in test.values:
+                    if isinstance(val, ast.Compare) and len(val.ops) == 1:
+                        op = self._emit_cmp(val)
+                        jmp = self._get_jump(op)
+                        nasm.append(f'  {jmp} {label_if}')
+                    elif isinstance(val, ast.Name):
+                        if is_reg(val.id):
+                            nasm.append(f'  test {val.id}, {val.id}')
+                        else:
+                            pos = self.vars.get_pos(self.current_func, val.id)
+                            nasm.append(f'  mov rdi, [rbp-{pos}] ; {val.id}')
+                            nasm.append(f'  test rdi, rdi')
+                        nasm.append(f'  jnz {label_if}')
+                    elif isinstance(val, ast.UnaryOp) and isinstance(val.op, ast.Not):
+                        self._emit_truthy_test(val.operand)
+                        nasm.append(f'  jz {label_if}')
+                    else:
+                        unimplemented('complex or operand')
+
+        elif isinstance(test, ast.Name):
+            self._emit_truthy_test(test)
+            nasm.append(f'  jnz {label_if}')
+
+        elif isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            self._emit_truthy_test(test.operand)
+            nasm.append(f'  jz {label_if}')
+
+        elif isinstance(test, ast.Constant):
+            if test.value:
+                nasm.append(f'  jmp {label_if}')
+
+        else:
+            unimplemented('if test type: ' + ast.dump(test))
+
+    def _emit_truthy_test(self, node):
+        global nasm
+        if isinstance(node, ast.Name):
+            if is_reg(node.id):
+                nasm.append(f'  test {node.id}, {node.id}')
+            else:
+                pos = self.vars.get_pos(self.current_func, node.id)
+                nasm.append(f'  mov rdi, [rbp-{pos}] ; {node.id}')
+                nasm.append(f'  test rdi, rdi')
+        elif isinstance(node, ast.Constant):
+            nasm.append(f'  mov rdi, {node.value}')
+            nasm.append(f'  test rdi, rdi')
+        else:
+            unimplemented('truthy test for ' + ast.dump(node))
+
+    def _load_value(self, node, reg='rax'):
+        global nasm, lbl
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str):
+                nasm.append(f'  call lbl{lbl}')
+                s = node.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
+                nasm.append(f'  db "{s}",0')
+                nasm.append(f'lbl{lbl}:')
+                lbl += 1
+                nasm.append(f'  pop {reg}')
+            elif node.value == 0:
+                nasm.append(f'  xor {reg}, {reg}')
+            else:
+                nasm.append(f'  mov {reg}, {node.value}')
+        elif isinstance(node, ast.Name):
+            if is_reg(node.id):
+                if reg_to_64(node.id) != reg:
+                    nasm.append(f'  mov {reg}, {reg_to_64(node.id)}')
+            else:
+                pos = self.vars.get_pos(self.current_func, node.id)
+                nasm.append(f'  mov {reg}, [rbp-{pos}] ; {node.id}')
+        elif isinstance(node, ast.Subscript):
+            if node.value.id == 'mem':
+                if isinstance(node.slice, ast.Name):
+                    nasm.append(f'  mov {reg}, [{node.slice.id}]')
+                elif isinstance(node.slice, ast.Constant):
+                    nasm.append(f'  mov {reg}, qword [0x{node.slice.value:x}]')
+                else:
+                    unimplemented('load_value mem slice')
+            else:
+                var = node.value.id
+                pos = self.vars.get_pos(self.current_func, var)
+                nasm.append(f'  mov rsi, [rbp-{pos}] ; {var}')
+                if isinstance(node.slice, ast.Constant):
+                    nasm.append(f'  mov {reg}, byte [rsi+{node.slice.value}]')
+                elif isinstance(node.slice, ast.Name):
+                    if is_reg(node.slice.id):
+                        nasm.append(f'  mov {reg}, byte [rsi+{node.slice.id}]')
+                    else:
+                        pos2 = self.vars.get_pos(self.current_func, node.slice.id)
+                        nasm.append(f'  mov rdi, [rbp-{pos2}] ; {node.slice.id}')
+                        nasm.append(f'  mov {reg}, byte [rsi+rdi]')
+                else:
+                    unimplemented('load_value array slice')
+        else:
+            unimplemented('load_value: ' + ast.dump(node))
 
 
     def visit_Import(self, node):
@@ -178,13 +545,14 @@ class visit_functions(ast.NodeVisitor):
                         unimplemented('len() weird case')
                     return
             elif node.func.id == 'alloc':
-                sz = node.args[0].id
+                sz = node.args[0].value if isinstance(node.args[0], ast.Constant) else node.args[0].id
                 label = f'alloc{lbl}'
                 lbl += 1
                 nasm.append(f'  call {label}')
                 nasm.append(f'  padding times {sz} db 0x00')
                 nasm.append(f'{label}:')
                 nasm.append(f'  pop rax')
+                return
 
 
             elif node.func.id in regs64:
@@ -412,37 +780,116 @@ class visit_functions(ast.NodeVisitor):
     '''
 
     def visit_Return(self, node):
-        global nasm
-        if isinstance(node.value, ast.Constant):
+        global nasm, lbl
+        if node.value is None:
+            pass
+        elif isinstance(node.value, ast.Constant):
             if node.value.value == 0:
-                # return 0
                 nasm.append(f'  xor rax, rax')
             else:
-                # return 123
                 nasm.append(f'  mov rax, {node.value.value}')
         elif isinstance(node.value, ast.Name):
             if is_reg(node.value.id):
                 if node.value.id != 'rax':
-                    # return rbx
                     nasm.append(f'  mov rax, {node.value.id}')
             else:
-                # return var
                 pos = self.vars.get_pos(self.current_func, node.value.id)
                 nasm.append(f'  mov rax, [rbp-{pos}] ; {node.value.id}')
+        elif isinstance(node.value, ast.Call):
+            self.visit_Call(node.value)
+        elif isinstance(node.value, ast.BinOp):
+            self._load_value(node.value.left, 'rax')
+            right = node.value.right
+            if isinstance(right, ast.Constant):
+                rval = str(right.value)
+            elif isinstance(right, ast.Name):
+                if is_reg(right.id):
+                    rval = right.id
+                else:
+                    pos_r = self.vars.get_pos(self.current_func, right.id)
+                    nasm.append(f'  mov rdi, [rbp-{pos_r}] ; {right.id}')
+                    rval = 'rdi'
+            else:
+                self._load_value(right, 'rdi')
+                rval = 'rdi'
+
+            op = node.value.op
+            if isinstance(op, ast.Add):
+                nasm.append(f'  add rax, {rval}')
+            elif isinstance(op, ast.Sub):
+                nasm.append(f'  sub rax, {rval}')
+            elif isinstance(op, ast.Mult):
+                if rval != 'rdi':
+                    nasm.append(f'  mov rdi, {rval}')
+                nasm.append(f'  mul rdi')
+            elif isinstance(op, ast.Div):
+                nasm.append(f'  xor rdx, rdx')
+                if rval != 'rdi':
+                    nasm.append(f'  mov rdi, {rval}')
+                nasm.append(f'  div rdi')
+            elif isinstance(op, ast.Mod):
+                nasm.append(f'  xor rdx, rdx')
+                if rval != 'rdi':
+                    nasm.append(f'  mov rdi, {rval}')
+                nasm.append(f'  div rdi')
+                nasm.append(f'  mov rax, rdx')
+            elif isinstance(op, ast.BitXor):
+                nasm.append(f'  xor rax, {rval}')
+            elif isinstance(op, ast.BitAnd):
+                nasm.append(f'  and rax, {rval}')
+            elif isinstance(op, ast.BitOr):
+                nasm.append(f'  or rax, {rval}')
+            elif isinstance(op, ast.LShift):
+                nasm.append(f'  mov rcx, {rval}')
+                nasm.append(f'  shl rax, cl')
+            elif isinstance(op, ast.RShift):
+                nasm.append(f'  mov rcx, {rval}')
+                nasm.append(f'  shr rax, cl')
+            else:
+                unimplemented('return binop: ' + str(op))
+        elif isinstance(node.value, ast.UnaryOp):
+            if isinstance(node.value.op, ast.USub):
+                self._load_value(node.value.operand, 'rax')
+                nasm.append(f'  neg rax')
+            elif isinstance(node.value.op, ast.Invert):
+                self._load_value(node.value.operand, 'rax')
+                nasm.append(f'  not rax')
+            else:
+                unimplemented('return unaryop: ' + str(node.value.op))
+        elif isinstance(node.value, ast.Subscript):
+            self._load_value(node.value, 'rax')
         else:
-            unimplemented('return '+node.value)
+            unimplemented('return: ' + ast.dump(node.value))
         nasm.append('  leave')
         nasm.append('  ret')
 
+
+    def visit_Break(self, node):
+        global nasm
+        if not self.loop_stack:
+            unimplemented('break outside loop')
+        _, break_label = self.loop_stack[-1]
+        nasm.append(f'  jmp {break_label}')
+
+    def visit_Continue(self, node):
+        global nasm
+        if not self.loop_stack:
+            unimplemented('continue outside loop')
+        continue_label, _ = self.loop_stack[-1]
+        nasm.append(f'  jmp {continue_label}')
 
     def visit_While(self, node):
         global nasm, lbl
 
         lbl_while = f'while{lbl}'
+        lbl_endwhile = f'endwhile{lbl}'
         lbl += 1
         nasm.append(f'\n{lbl_while}:')
 
-        self.generic_visit(node)
+        self.loop_stack.append((lbl_while, lbl_endwhile))
+        for b in node.body:
+            self.visit(b)
+        self.loop_stack.pop()
 
         if isinstance(node.test, ast.Constant):
             if str(node.test.value) == 'True':
@@ -490,9 +937,20 @@ class visit_functions(ast.NodeVisitor):
                 nasm.append(f'  jne {lbl_while}')
             else:
                 unimplemented("while operator "+str(node.test.ops))
-              
+
+        elif isinstance(node.test, ast.BoolOp) or isinstance(node.test, ast.Name) or \
+                (isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)):
+            label_cont = f'whilecont{lbl}'
+            lbl += 1
+            self._emit_if_test(node.test, label_cont)
+            nasm.append(f'  jmp {lbl_endwhile}')
+            nasm.append(f'{label_cont}:')
+            nasm.append(f'  jmp {lbl_while}')
+
         else:
             unimplemented('while variant '+str(node.test))
+
+        nasm.append(f'\n{lbl_endwhile}:')
 
 
 
@@ -548,7 +1006,7 @@ class visit_functions(ast.NodeVisitor):
                                 range_max = args[1].id
                                 if not is_reg(range_max):
                                     pos = self.vars.get_pos(self.current_func, range_max)
-                                    range_max = f'qowrd [rbp-{pos}]'
+                                    range_max = f'qword [rbp-{pos}]'
                             if isinstance(args[2], ast.Constant):
                                 range_step= args[2].value
                             else:
@@ -557,19 +1015,25 @@ class visit_functions(ast.NodeVisitor):
                         pos = 0
                         if not is_reg(reg):
                             pos = self.vars.get_pos(self.current_func, reg)
-                            #nasm.append(f'  mov rcx, qword [rbp-{pos}]')
                             reg = 'rcx'
 
                         nasm.append(f'  mov {reg}, {range_min}')
                         for_lbl = f'for{lbl}'
+                        for_cont = f'forcont{lbl}'
+                        for_end = f'endfor{lbl}'
                         lbl += 1
                         nasm.append(f'{for_lbl}:')
-                        self.generic_visit(node)
+                        self.loop_stack.append((for_cont, for_end))
+                        for b in node.body:
+                            self.visit(b)
+                        self.loop_stack.pop()
+                        nasm.append(f'{for_cont}:')
                         nasm.append(f'  add {reg}, {range_step}')
                         if pos > 0:
                             nasm.append(f'  mov qword [rbp-{pos}], {reg}')
                         nasm.append(f'  cmp {reg}, {range_max}')
                         nasm.append(f'  jl {for_lbl}')
+                        nasm.append(f'{for_end}:')
 
 
             else:
@@ -581,166 +1045,11 @@ class visit_functions(ast.NodeVisitor):
     def visit_If(self, node):
         global nasm, lbl
 
-        #nasm.append( ast.unparse(node.test) )
+        label_if = f'if{lbl}'
+        lbl += 1
 
-        if isinstance(node.test, ast.Compare) and \
-                len(node.test.ops) == 1 and \
-                len(node.test.comparators) == 1:
-                    left = node.test.left
-                    op = node.test.ops[0]
-                    right = node.test.comparators[0]
-
-                    cmpsb = False
-                    if isinstance(left, ast.Call) and isinstance(right, ast.Call):
-                        if left.func.id == 'str' and right.func.id == 'str':
-                            left = left.args[0].id
-                            right = right.args[0].id
-                            cmpsb = True
-                        else:
-                            unimplemented('weird if + call')
-
-                    if cmpsb:
-                        nasm.append(f'  rep cmpsb')
-                    else:
-                        if isinstance(left, ast.Subscript):
-                            var = left.value.id 
-                            pos = self.vars.get_pos(self.current_func, var)
-                            if isinstance(left.slice, ast.Constant):
-                                # if a[0] == 3
-                                idx = left.slice.value
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
-                                nasm.append(f'  mov al, byte [rsi+{idx}]')
-                            else:
-                                # if a[i] == 3
-                                idx = left.slice.id
-                                pos2 = self.vars.get_pos(self.current_func, idx)
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
-                                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {idx}')
-                                nasm.append(f'  mov al, byte [rsi+rdi]')
-                            left = ' al'
-
-                        if isinstance(right, ast.Subscript):
-                            # if 3 == a[0]:
-                            var = right.value.id 
-                            pos = self.vars.get_pos(self.current_func, var)
-                            if isinstance(left.slice, ast.Constant):
-                                # if a[0] == ...
-                                idx = right.slice.value
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
-                                nasm.append(f'  mov bl, byte [rsi]')
-                            else:
-                                # if a[i] == ...
-                                idx = right.slice.id
-                                pos2 = self.vars.get_pos(self.current_func, idx)
-                                nasm.append(f'  mov rsi, qword [rbp-{pos}] ; {var}')
-                                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {idx}')
-                                nasm.append(f'  mov bl, byte [rsi+rdi]')
-                            right = ' bl'
-
-                       
-                        
-                        if not isinstance(left, str):
-                            if isinstance(left, ast.Constant):
-                                # if 3 == ...
-                                left = left.value
-                            else:
-                                # if a == ...
-                                left = left.id
-
-                        if not isinstance(right, str):
-                            if isinstance(right, ast.Constant):
-                                # if ... == 3
-                                right = right.value
-                            else:
-                                # if ... == a
-                                right = right.id
-
-                        if is_reg(left) and not is_reg(right):
-                            # if eax == 3:
-                            pos = self.vars.get_pos(self.current_func, right)
-                            right = f'qword [rbp-{pos}]'
-                        elif not is_reg(left) and is_reg(right):
-                            # if 3 == eax:
-                            pos = self.vars.get_pos(self.current_func, left)
-                            left = f'qword [rbp-{pos}]'
-                        else:
-                            # let's alloc if var1 == var2 using rsi and rdi
-                            if left != ' al' and right != ' bl':
-                                # if a == b: 64bits compare
-                                pos1 = self.vars.get_pos(self.current_func, left)
-                                nasm.append(f'  mov rsi, [rbp-{pos1}] ; {left}')
-                                left = 'rsi'
-
-                                pos2 = self.vars.get_pos(self.current_func, right)
-                                nasm.append(f'  mov rdi, [rbp-{pos2}] ; {right}')
-                                right = 'rdi'
-                            elif left == ' al' and right == ' bl':
-                                pass
-                            elif left == ' al' and right != ' bl':
-                                try:
-                                    n = int(right)
-                                    nasm.append(f'  mov bl, byte {right}')
-                                except:
-                                    nasm.append(f'  mov bl, byte \'{right}\'')
-                                right = ' bl'
-                            elif left != ' al' and right == ' bl':
-                                try:
-                                    n = int(left)
-                                    nasm.append(f'  mov al, byte {left}')
-                                except:
-                                    nasm.append(f'  mov al, byte \'{left}\'')
-                                left = ' al'
-                            else:
-                                unimiplemented("imposible case")
-
-
-                        nasm.append(f'  cmp {left}, {right}')
-
-                    label_if = f'if{lbl}'
-                    lbl += 1
-                    if isinstance(op, ast.Gt):
-                        nasm.append(f'  jg {label_if}')
-                    elif isinstance(op, ast.Lt):
-                        nasm.append(f'  jl {label_if}')
-                    elif isinstance(op, ast.LtE):
-                        nasm.append(f'  jle {label_if}')
-                    elif isinstance(op, ast.GtE):
-                        nasm.append(f'  jge {label_if}')
-                    elif isinstance(op, ast.Eq):
-                        nasm.append(f'  je {label_if}')
-                    elif isinstance(op, ast.NotEq):
-                        nasm.append(f'  jne {label_if}')
-                    else:
-                        unimplemented("if operator "+str(node.test.op))
-
-
-                    if node.orelse:
-                        label_else = f'else{lbl}'
-                        lbl += 1
-                        label_endif = f'endif{lbl}'
-                        lbl += 1
-                        nasm.append(f'  jmp {label_else}')
-                        nasm.append(f'\n{label_if}:')
-                        for b in node.body:
-                            self.visit(b)
-                        nasm.append(f'  jmp {label_endif}')
-                        nasm.append(f'\n{label_else}:')
-                        for e in node.orelse:
-                            self.visit(e)
-                        nasm.append(f'\n{label_endif}:')
-                        return
-
-                    label_noif = f'endif{lbl}'
-                    lbl += 1
-
-                    nasm.append(f'  jmp {label_noif}')
-                    nasm.append(f'\n{label_if}:')
-                    self.generic_visit(node)
-                    nasm.append(f'\n{label_noif}:')
-                    
-                    
-        else:
-            unimplemented('complex if')
+        self._emit_if_test(node.test, label_if)
+        self._emit_body(node, label_if)
 
 
     def visit_Assign(self, node):
@@ -795,7 +1104,7 @@ class visit_functions(ast.NodeVisitor):
                             val = node.value.value
 
                             nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {var}')
-                            nasm.append(f'  mov rsi, qword [rbp-{pos2}] ; {idx}')
+                            nasm.append(f'  mov rsi, qword [rbp-{pos1}] ; {idx}')
                             nasm.append(f'  mov byte [rdi+rsi], {val}')
 
                     else:
@@ -866,8 +1175,11 @@ class visit_functions(ast.NodeVisitor):
                             elif is_reg(target.id) and not is_reg(node.value.id):
                                 pos = self.vars.get_pos(self.current_func, node.value.id)
                                 nasm.append(f'  mov {target.id}, qword [rbp-{pos}] ; {node.value.id}')
-                        else:
-                            unimplemented("var = var not alowed, so does eax = eax")
+                            else:
+                                pos_src = self.vars.get_pos(self.current_func, node.value.id)
+                                pos_dst = self.vars.get_pos(self.current_func, target.id)
+                                nasm.append(f'  mov rdi, qword [rbp-{pos_src}] ; {node.value.id}')
+                                nasm.append(f'  mov qword [rbp-{pos_dst}], rdi ; {target.id}')
 
 
             elif isinstance(node.value, ast.Subscript):
@@ -1005,8 +1317,103 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov qword [rbp-{pos}], rdi ; {target.id}')
 
 
+            elif isinstance(node.value, ast.BinOp):
+                self._load_value(node.value.left, 'rax')
+                right = node.value.right
+
+                if isinstance(right, ast.Constant):
+                    rval = str(right.value)
+                elif isinstance(right, ast.Name):
+                    if is_reg(right.id):
+                        rval = right.id
+                    else:
+                        pos_r = self.vars.get_pos(self.current_func, right.id)
+                        nasm.append(f'  mov rdi, [rbp-{pos_r}] ; {right.id}')
+                        rval = 'rdi'
+                else:
+                    self._load_value(right, 'rdi')
+                    rval = 'rdi'
+
+                op = node.value.op
+                if isinstance(op, ast.Add):
+                    nasm.append(f'  add rax, {rval}')
+                elif isinstance(op, ast.Sub):
+                    nasm.append(f'  sub rax, {rval}')
+                elif isinstance(op, ast.Mult):
+                    if rval != 'rdi':
+                        nasm.append(f'  mov rdi, {rval}')
+                    nasm.append(f'  mul rdi')
+                elif isinstance(op, ast.Div):
+                    nasm.append(f'  xor rdx, rdx')
+                    if rval != 'rdi':
+                        nasm.append(f'  mov rdi, {rval}')
+                    nasm.append(f'  div rdi')
+                elif isinstance(op, ast.Mod):
+                    nasm.append(f'  xor rdx, rdx')
+                    if rval != 'rdi':
+                        nasm.append(f'  mov rdi, {rval}')
+                    nasm.append(f'  div rdi')
+                    nasm.append(f'  mov rax, rdx')
+                elif isinstance(op, ast.BitXor):
+                    nasm.append(f'  xor rax, {rval}')
+                elif isinstance(op, ast.BitAnd):
+                    nasm.append(f'  and rax, {rval}')
+                elif isinstance(op, ast.BitOr):
+                    nasm.append(f'  or rax, {rval}')
+                elif isinstance(op, ast.LShift):
+                    nasm.append(f'  mov rcx, {rval}')
+                    nasm.append(f'  shl rax, cl')
+                elif isinstance(op, ast.RShift):
+                    nasm.append(f'  mov rcx, {rval}')
+                    nasm.append(f'  shr rax, cl')
+                else:
+                    unimplemented('binop: ' + str(op))
+
+                if isinstance(target, ast.Name):
+                    if is_reg(target.id):
+                        if target.id != 'rax':
+                            nasm.append(f'  mov {target.id}, rax')
+                    else:
+                        pos_t = self.vars.get_pos(self.current_func, target.id)
+                        nasm.append(f'  mov [rbp-{pos_t}], rax ; {target.id}')
+                elif isinstance(target, ast.Subscript):
+                    pos_t = self.vars.get_pos(self.current_func, target.value.id)
+                    nasm.append(f'  mov rsi, [rbp-{pos_t}] ; {target.value.id}')
+                    if isinstance(target.slice, ast.Constant):
+                        nasm.append(f'  mov [rsi+{target.slice.value}], al')
+                    elif isinstance(target.slice, ast.Name):
+                        if is_reg(target.slice.id):
+                            nasm.append(f'  mov [rsi+{target.slice.id}], al')
+                        else:
+                            pos_i = self.vars.get_pos(self.current_func, target.slice.id)
+                            nasm.append(f'  mov rcx, [rbp-{pos_i}] ; {target.slice.id}')
+                            nasm.append(f'  mov [rsi+rcx], al')
+
+            elif isinstance(node.value, ast.UnaryOp):
+                if isinstance(node.value.op, ast.USub):
+                    self._load_value(node.value.operand, 'rax')
+                    nasm.append(f'  neg rax')
+                elif isinstance(node.value.op, ast.Invert):
+                    self._load_value(node.value.operand, 'rax')
+                    nasm.append(f'  not rax')
+                elif isinstance(node.value.op, ast.Not):
+                    self._load_value(node.value.operand, 'rax')
+                    nasm.append(f'  test rax, rax')
+                    nasm.append(f'  setz al')
+                    nasm.append(f'  movzx rax, al')
+                else:
+                    unimplemented('unaryop: ' + str(node.value.op))
+
+                if isinstance(target, ast.Name):
+                    if is_reg(target.id):
+                        if target.id != 'rax':
+                            nasm.append(f'  mov {target.id}, rax')
+                    else:
+                        pos_t = self.vars.get_pos(self.current_func, target.id)
+                        nasm.append(f'  mov [rbp-{pos_t}], rax ; {target.id}')
+
             else:
-                unimplemented('assign else')
+                unimplemented('assign: ' + ast.dump(node.value))
 
 
         self.generic_visit(node)
@@ -1033,38 +1440,70 @@ class visit_functions(ast.NodeVisitor):
                     nasm.append(f'  mov rdi, [rbp-{pos}] ; {prevreg}');
                     val = 'rsi'
                     reg = 'rdi'
-                    var2var = (pos, pos2) 
+                    var2var = (pos, pos2)
                 else:
-                    # var1 += rax
+                    # rax += var
                     pos = self.vars.get_pos(self.current_func, val)
                     val = f'qword [rbp-{pos}] ; {val}'
-
 
         elif isinstance(node.value, ast.Constant):
             val = node.value.value
         else:
-            unimplemented(node.value)
-
+            unimplemented('augassign value: ' + ast.dump(node.value))
 
         if isinstance(node.op, ast.Add):
             nasm.append(f'  add {reg}, {val}')
         elif isinstance(node.op, ast.Sub):
             nasm.append(f'  sub {reg}, {val}')
         elif isinstance(node.op, ast.Mult):
-            nasm.append(f'  mov rax, {val}')
-            nasm.append(f'  mul {reg}')
+            nasm.append(f'  mov rax, {reg_to_64(reg)}')
+            nasm.append(f'  mov rdi, {reg_to_64(val) if isinstance(val, str) else val}')
+            nasm.append(f'  mul rdi')
+            if not var2var and not is_reg(reg):
+                nasm.append(f'  mov {reg}, rax')
+            elif is_reg(reg):
+                if reg_to_64(reg) != 'rax':
+                    nasm.append(f'  mov {reg_to_64(reg)}, rax')
         elif isinstance(node.op, ast.Div):
             nasm.append(f'  xor rdx, rdx')
-            nasm.append(f'  mov rax, {reg}')
-            nasm.append(f'  mov {reg}, {val}')
-            nasm.append(f'  div {reg}')
+            nasm.append(f'  mov rax, {reg_to_64(reg)}')
+            nasm.append(f'  mov rdi, {reg_to_64(val) if isinstance(val, str) else val}')
+            nasm.append(f'  div rdi')
+            if not var2var and not is_reg(reg):
+                nasm.append(f'  mov {reg}, rax')
+            elif is_reg(reg):
+                if reg_to_64(reg) != 'rax':
+                    nasm.append(f'  mov {reg_to_64(reg)}, rax')
+        elif isinstance(node.op, ast.Mod):
+            nasm.append(f'  xor rdx, rdx')
+            nasm.append(f'  mov rax, {reg_to_64(reg)}')
+            nasm.append(f'  mov rdi, {reg_to_64(val) if isinstance(val, str) else val}')
+            nasm.append(f'  div rdi')
+            if not var2var:
+                nasm.append(f'  mov {reg_to_64(reg) if is_reg(reg) else reg}, rdx')
+            # var2var: result in rdx, stored below
         elif isinstance(node.op, ast.BitXor):
             nasm.append(f'  xor {reg}, {val}')
+        elif isinstance(node.op, ast.BitAnd):
+            nasm.append(f'  and {reg}, {val}')
+        elif isinstance(node.op, ast.BitOr):
+            nasm.append(f'  or {reg}, {val}')
+        elif isinstance(node.op, ast.LShift):
+            nasm.append(f'  mov rcx, {val}')
+            nasm.append(f'  shl {reg}, cl')
+        elif isinstance(node.op, ast.RShift):
+            nasm.append(f'  mov rcx, {val}')
+            nasm.append(f'  shr {reg}, cl')
         else:
-            unimplemented(node.op)
+            unimplemented('augassign op: ' + str(node.op))
 
         if var2var:
-            nasm.append(f'  mov rsi, [rbp-{var2var[1]}] ; {prevreg}')
+            if isinstance(node.op, (ast.Mult, ast.Div)):
+                nasm.append(f'  mov [rbp-{var2var[0]}], rax ; {prevreg}')
+            elif isinstance(node.op, ast.Mod):
+                nasm.append(f'  mov [rbp-{var2var[0]}], rdx ; {prevreg}')
+            else:
+                nasm.append(f'  mov [rbp-{var2var[0]}], rdi ; {prevreg}')
 
 
 
