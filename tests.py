@@ -88,7 +88,7 @@ def main():
     ('assign_reg_string', '''
 def main():
     rsi = 'hello'
-''', ['db "hello",0', 'pop rsi'], []),
+''', ['db "hello", 0', 'pop rsi'], []),
 
     ('assign_var_const', '''
 def main():
@@ -98,7 +98,7 @@ def main():
     ('assign_var_string', '''
 def main():
     s = 'test'
-''', ['db "test",0', 'mov [rbp-'], []),
+''', ['db "test", 0', 'mov [rbp-'], []),
 
     ('assign_var_to_var', '''
 def main():
@@ -367,7 +367,7 @@ def foo(s):
 
 def main():
     foo('hello')
-''', ['db "hello",0', 'call foo'], []),
+''', ['db "hello", 0', 'call foo'], []),
 
     ('func_call_assign_result', '''
 def foo():
@@ -784,7 +784,7 @@ def main():
     ('string_escape', '''
 def main():
     s = 'hello\\nworld'
-''', ['db "hello\\nworld",0'], []),
+''', ['db "hello", 0x0a, "world", 0'], []),
 
     # --- indirect reg call ---
 
@@ -842,7 +842,7 @@ def main():
     mistr = 'test'
     l = len(mistr)
     al = mistr[0]
-''', ['db "test",0', 'mov rax, 4', 'mov al, byte [rsi+0]'], []),
+''', ['db "test", 0', 'mov rax, 4', 'mov al, byte [rsi+0]'], []),
 
 ]
 

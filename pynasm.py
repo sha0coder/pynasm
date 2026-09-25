@@ -48,6 +48,24 @@ def unimplemented(msg): # rust style
     sys.exit(1)
 
 
+def nasm_db(s, null_term=True):
+    parts = []
+    chunk = ''
+    for ch in s:
+        if 32 <= ord(ch) < 127 and ch != '"' and ch != '\\':
+            chunk += ch
+        else:
+            if chunk:
+                parts.append(f'"{chunk}"')
+                chunk = ''
+            parts.append(f'0x{ord(ch):02x}')
+    if chunk:
+        parts.append(f'"{chunk}"')
+    if null_term:
+        parts.append('0')
+    return '  db ' + ', '.join(parts)
+
+
 class Var:
 
     def __init__(self, func, name, pos, s=None):
@@ -433,8 +451,7 @@ class visit_functions(ast.NodeVisitor):
         if isinstance(node, ast.Constant):
             if isinstance(node.value, str):
                 nasm.append(f'  call lbl{lbl}')
-                s = node.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
-                nasm.append(f'  db "{s}",0')
+                nasm.append(nasm_db(node.value))
                 nasm.append(f'lbl{lbl}:')
                 lbl += 1
                 nasm.append(f'  pop {reg}')
@@ -576,7 +593,7 @@ class visit_functions(ast.NodeVisitor):
                             label = f'str_arg{lbl}'
                             lbl += 1
                             nasm.append(f'  call {label}')
-                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(nasm_db(arg.value))
                             nasm.append(f'{label}:')
                             arg = 'rdi'
                             nasm.append(f'  pop {arg}')
@@ -591,7 +608,7 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov rcx, {arg}')
                 if l >= 2:
                     arg = node.args[1]
-                    if isinstance(arg, ast.Constant):  # constants 
+                    if isinstance(arg, ast.Constant):  # constants
                         try:
                             # rax(1,123)
                             n = int(arg.value)
@@ -601,7 +618,7 @@ class visit_functions(ast.NodeVisitor):
                             label = f'str_arg{lbl}'
                             lbl += 1
                             nasm.append(f'  call {label}')
-                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(nasm_db(arg.value))
                             nasm.append(f'{label}:')
                             arg = 'rdi'
                             nasm.append(f'  pop {arg}')
@@ -615,7 +632,7 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov rdx, {arg}')
                 if l >= 3:
                     arg = node.args[2]
-                    if isinstance(arg, ast.Constant):  # constants 
+                    if isinstance(arg, ast.Constant):  # constants
                         try:
                             # rax(1,1,123)
                             n = int(arg.value)
@@ -625,7 +642,7 @@ class visit_functions(ast.NodeVisitor):
                             label = f'str_arg{lbl}'
                             lbl += 1
                             nasm.append(f'  call {label}')
-                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(nasm_db(arg.value))
                             nasm.append(f'{label}:')
                             arg = 'rdi'
                             nasm.append(f'  pop {arg}')
@@ -638,7 +655,7 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov r8, {arg}')
                 if l >= 4:
                     arg = node.args[3]
-                    if isinstance(arg, ast.Constant):  # constants 
+                    if isinstance(arg, ast.Constant):  # constants
                         try:
                             # rax(1,1,1,123)
                             n = int(arg.value)
@@ -648,7 +665,7 @@ class visit_functions(ast.NodeVisitor):
                             label = f'str_arg{lbl}'
                             lbl += 1
                             nasm.append(f'  call {label}')
-                            nasm.append(f'  db "{arg.value}", 0')
+                            nasm.append(nasm_db(arg.value))
                             nasm.append(f'{label}:')
                             arg = 'rdi'
                             nasm.append(f'  pop {arg}')
@@ -672,7 +689,7 @@ class visit_functions(ast.NodeVisitor):
                                 label = f'str_arg{lbl}'
                                 lbl += 1
                                 nasm.append(f'  call {label}')
-                                nasm.append(f'  db "{arg.value}", 0')
+                                nasm.append(nasm_db(arg.value))
                                 nasm.append(f'{label}:')
                         elif isinstance(arg, ast.Name):  # vars
                             arg = arg.id
@@ -711,7 +728,7 @@ class visit_functions(ast.NodeVisitor):
                     str_param = f'str_param{lbl}'
                     lbl += 1
                     nasm.append(f'  call {str_param}')
-                    nasm.append(f'  db "{arg.value}",0')
+                    nasm.append(nasm_db(arg.value))
                     nasm.append(f'{str_param}:')
 
 
@@ -1120,8 +1137,7 @@ class visit_functions(ast.NodeVisitor):
                         except Exception as e:
                             # strings  s = 'hello'
                             nasm.append(f'  call lbl{lbl}')
-                            s = node.value.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
-                            nasm.append(f'  db "{s}",0')
+                            nasm.append(nasm_db(node.value.value))
                             nasm.append(f'lbl{lbl}:')
                             lbl += 1
                             if is_reg(target.id):
