@@ -29,3 +29,6 @@ calc2.py
 a.exe
 *.exe
 *.obj
+*.o
+*.bin
+helloworld
