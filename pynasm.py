@@ -43,8 +43,11 @@ reg_to_64 = lambda r: _to64.get(r, r)
 extern = set()
 
 
-def unimplemented(msg): # rust style
-    print(f'UNIMPLEMENTED: {msg}')
+def unimplemented(msg, node=None):
+    if node and hasattr(node, 'lineno'):
+        print(f'UNIMPLEMENTED (line {node.lineno}): {msg}')
+    else:
+        print(f'UNIMPLEMENTED: {msg}')
     sys.exit(1)
 
 
@@ -88,12 +91,10 @@ class LocalVars:
 
     def get_str(self, func, name):
         for var in self.vars:
-            #print(f' if {var.func} == {func} and {var.name} == {name}:')
             if var.func == func and var.name == name:
-                #print(f' str: {var.str}')
                 return var.str
         return None
-    
+
     def get_pos(self, func, name, s=None, dbg=False):
         for var in self.vars:
             if dbg:
@@ -114,28 +115,13 @@ class LocalVars:
             if var.func == func:
                 nxt += 1
         return nxt
-           
+
 
 
 def align_stack(pos):
     global nasm, lbl
     nasm.append(f'  mov [rbp-{pos}], rsp')
     nasm.append(f'  and rsp, 0xfffffffffffffff0')
-    '''
-    need_adjust = f'need_adjust{lbl}'
-    lbl += 1
-    dont_need = f'dont_need_adjust{lbl}'
-    lbl += 1
-
-    nasm.append(f'  push rsp')
-    nasm.append(f'  test rsp, 0xf')
-    nasm.append(f'  jnz {need_adjust}')
-    nasm.append(f'  jmp {dont_need}')
-    nasm.append(f'{need_adjust}:')
-    nasm.append(f'  sub rsp, 8')
-    nasm.append(f'{dont_need}:')
-    '''
-   
 
 
 class visit_functions(ast.NodeVisitor):
@@ -143,6 +129,8 @@ class visit_functions(ast.NodeVisitor):
         self.current_func = ''
         self.vars = LocalVars()
         self.loop_stack = []
+        self.globals = {}
+        self.data_section = []
 
 
     def _get_jump(self, op):
@@ -171,7 +159,7 @@ class visit_functions(ast.NodeVisitor):
                 right = right.args[0].id
                 cmpsb = True
             else:
-                unimplemented('weird if + call')
+                unimplemented('weird if + call', compare)
 
         if cmpsb:
             nasm.append(f'  rep cmpsb')
@@ -363,23 +351,42 @@ class visit_functions(ast.NodeVisitor):
 
     def _emit_if_test(self, test, label_if):
         global nasm, lbl
-        if isinstance(test, ast.Compare) and \
-                len(test.ops) == 1 and \
-                len(test.comparators) == 1:
-            op = self._emit_cmp(test)
-            jmp = self._get_jump(op)
-            nasm.append(f'  {jmp} {label_if}')
+        if isinstance(test, ast.Compare):
+            if len(test.ops) == 1 and len(test.comparators) == 1:
+                op = self._emit_cmp(test)
+                jmp = self._get_jump(op)
+                nasm.append(f'  {jmp} {label_if}')
+            else:
+                label_fail = f'chainfail{lbl}'
+                lbl += 1
+                prev = test.left
+                for i, (op, comp) in enumerate(zip(test.ops, test.comparators)):
+                    pair = ast.Compare(left=prev, ops=[op], comparators=[comp])
+                    pair_op = self._emit_cmp(pair)
+                    jmp = self._get_jump(pair_op)
+                    inv = self._invert_jump(jmp)
+                    nasm.append(f'  {inv} {label_fail}')
+                    prev = comp
+                nasm.append(f'  jmp {label_if}')
+                nasm.append(f'{label_fail}:')
 
         elif isinstance(test, ast.BoolOp):
             if isinstance(test.op, ast.And):
                 label_fail = f'andfail{lbl}'
                 lbl += 1
                 for val in test.values:
-                    if isinstance(val, ast.Compare) and len(val.ops) == 1:
-                        op = self._emit_cmp(val)
-                        jmp = self._get_jump(op)
-                        inv = self._invert_jump(jmp)
-                        nasm.append(f'  {inv} {label_fail}')
+                    if isinstance(val, ast.Compare):
+                        if len(val.ops) == 1:
+                            op = self._emit_cmp(val)
+                            jmp = self._get_jump(op)
+                            inv = self._invert_jump(jmp)
+                            nasm.append(f'  {inv} {label_fail}')
+                        else:
+                            inner_ok = f'chainok{lbl}'
+                            lbl += 1
+                            self._emit_if_test(val, inner_ok)
+                            nasm.append(f'  jmp {label_fail}')
+                            nasm.append(f'{inner_ok}:')
                     elif isinstance(val, ast.Name):
                         if is_reg(val.id):
                             nasm.append(f'  test {val.id}, {val.id}')
@@ -392,16 +399,19 @@ class visit_functions(ast.NodeVisitor):
                         self._emit_truthy_test(val.operand)
                         nasm.append(f'  jnz {label_fail}')
                     else:
-                        unimplemented('complex and operand')
+                        unimplemented('complex and operand', val)
                 nasm.append(f'  jmp {label_if}')
                 nasm.append(f'{label_fail}:')
 
             elif isinstance(test.op, ast.Or):
                 for val in test.values:
-                    if isinstance(val, ast.Compare) and len(val.ops) == 1:
-                        op = self._emit_cmp(val)
-                        jmp = self._get_jump(op)
-                        nasm.append(f'  {jmp} {label_if}')
+                    if isinstance(val, ast.Compare):
+                        if len(val.ops) == 1:
+                            op = self._emit_cmp(val)
+                            jmp = self._get_jump(op)
+                            nasm.append(f'  {jmp} {label_if}')
+                        else:
+                            self._emit_if_test(val, label_if)
                     elif isinstance(val, ast.Name):
                         if is_reg(val.id):
                             nasm.append(f'  test {val.id}, {val.id}')
@@ -414,7 +424,7 @@ class visit_functions(ast.NodeVisitor):
                         self._emit_truthy_test(val.operand)
                         nasm.append(f'  jz {label_if}')
                     else:
-                        unimplemented('complex or operand')
+                        unimplemented('complex or operand', val)
 
         elif isinstance(test, ast.Name):
             self._emit_truthy_test(test)
@@ -429,7 +439,7 @@ class visit_functions(ast.NodeVisitor):
                 nasm.append(f'  jmp {label_if}')
 
         else:
-            unimplemented('if test type: ' + ast.dump(test))
+            unimplemented('if test type: ' + ast.dump(test), test)
 
     def _emit_truthy_test(self, node):
         global nasm
@@ -444,7 +454,7 @@ class visit_functions(ast.NodeVisitor):
             nasm.append(f'  mov rdi, {node.value}')
             nasm.append(f'  test rdi, rdi')
         else:
-            unimplemented('truthy test for ' + ast.dump(node))
+            unimplemented('truthy test for ' + ast.dump(node), node)
 
     def _load_value(self, node, reg='rax'):
         global nasm, lbl
@@ -463,6 +473,12 @@ class visit_functions(ast.NodeVisitor):
             if is_reg(node.id):
                 if reg_to_64(node.id) != reg:
                     nasm.append(f'  mov {reg}, {reg_to_64(node.id)}')
+            elif node.id in self.globals:
+                gtype, _ = self.globals[node.id]
+                if gtype == 'dq':
+                    nasm.append(f'  mov {reg}, [{node.id}]')
+                else:
+                    nasm.append(f'  lea {reg}, [{node.id}]')
             else:
                 pos = self.vars.get_pos(self.current_func, node.id)
                 nasm.append(f'  mov {reg}, [rbp-{pos}] ; {node.id}')
@@ -473,7 +489,24 @@ class visit_functions(ast.NodeVisitor):
                 elif isinstance(node.slice, ast.Constant):
                     nasm.append(f'  mov {reg}, qword [0x{node.slice.value:x}]')
                 else:
-                    unimplemented('load_value mem slice')
+                    unimplemented('load_value mem slice', node)
+            elif isinstance(node.slice, ast.Slice):
+                var = node.value.id
+                if is_reg(var):
+                    nasm.append(f'  mov {reg}, {reg_to_64(var)}') if reg_to_64(var) != reg else None
+                else:
+                    pos = self.vars.get_pos(self.current_func, var)
+                    nasm.append(f'  mov {reg}, [rbp-{pos}] ; {var}')
+                if node.slice.lower is not None:
+                    if isinstance(node.slice.lower, ast.Constant):
+                        nasm.append(f'  add {reg}, {node.slice.lower.value}')
+                    elif isinstance(node.slice.lower, ast.Name):
+                        if is_reg(node.slice.lower.id):
+                            nasm.append(f'  add {reg}, {reg_to_64(node.slice.lower.id)}')
+                        else:
+                            pos2 = self.vars.get_pos(self.current_func, node.slice.lower.id)
+                            nasm.append(f'  mov rdi, [rbp-{pos2}] ; {node.slice.lower.id}')
+                            nasm.append(f'  add {reg}, rdi')
             else:
                 var = node.value.id
                 pos = self.vars.get_pos(self.current_func, var)
@@ -488,9 +521,160 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov rdi, [rbp-{pos2}] ; {node.slice.id}')
                         nasm.append(f'  mov {reg}, byte [rsi+rdi]')
                 else:
-                    unimplemented('load_value array slice')
+                    unimplemented('load_value array slice', node)
+        elif isinstance(node, ast.BinOp):
+            self._emit_binop(node, reg)
+        elif isinstance(node, ast.Call):
+            self.visit_Call(node)
+            if reg != 'rax':
+                nasm.append(f'  mov {reg}, rax')
+        elif isinstance(node, ast.UnaryOp):
+            if isinstance(node.op, ast.USub):
+                self._load_value(node.operand, reg)
+                nasm.append(f'  neg {reg}')
+            elif isinstance(node.op, ast.Invert):
+                self._load_value(node.operand, reg)
+                nasm.append(f'  not {reg}')
+            else:
+                unimplemented('load_value unaryop', node)
         else:
-            unimplemented('load_value: ' + ast.dump(node))
+            unimplemented('load_value: ' + ast.dump(node), node)
+
+    def _emit_binop(self, node, result_reg='rax'):
+        global nasm
+        self._load_value(node.left, 'rax')
+        right = node.right
+
+        if isinstance(right, ast.Constant):
+            rval = str(right.value)
+        elif isinstance(right, ast.Name):
+            if is_reg(right.id):
+                rval = right.id
+            else:
+                pos_r = self.vars.get_pos(self.current_func, right.id)
+                nasm.append(f'  mov rdi, [rbp-{pos_r}] ; {right.id}')
+                rval = 'rdi'
+        else:
+            nasm.append(f'  push rax')
+            self._load_value(right, 'rdi')
+            nasm.append(f'  pop rax')
+            rval = 'rdi'
+
+        op = node.op
+        if isinstance(op, ast.Add):
+            nasm.append(f'  add rax, {rval}')
+        elif isinstance(op, ast.Sub):
+            nasm.append(f'  sub rax, {rval}')
+        elif isinstance(op, ast.Mult):
+            if rval != 'rdi':
+                nasm.append(f'  mov rdi, {rval}')
+            nasm.append(f'  mul rdi')
+        elif isinstance(op, ast.Div):
+            nasm.append(f'  xor rdx, rdx')
+            if rval != 'rdi':
+                nasm.append(f'  mov rdi, {rval}')
+            nasm.append(f'  div rdi')
+        elif isinstance(op, ast.Mod):
+            nasm.append(f'  xor rdx, rdx')
+            if rval != 'rdi':
+                nasm.append(f'  mov rdi, {rval}')
+            nasm.append(f'  div rdi')
+            nasm.append(f'  mov rax, rdx')
+        elif isinstance(op, ast.BitXor):
+            nasm.append(f'  xor rax, {rval}')
+        elif isinstance(op, ast.BitAnd):
+            nasm.append(f'  and rax, {rval}')
+        elif isinstance(op, ast.BitOr):
+            nasm.append(f'  or rax, {rval}')
+        elif isinstance(op, ast.LShift):
+            nasm.append(f'  mov rcx, {rval}')
+            nasm.append(f'  shl rax, cl')
+        elif isinstance(op, ast.RShift):
+            nasm.append(f'  mov rcx, {rval}')
+            nasm.append(f'  shr rax, cl')
+        else:
+            unimplemented('binop: ' + str(op), node)
+
+        if result_reg != 'rax':
+            nasm.append(f'  mov {result_reg}, rax')
+
+    def _resolve_arg(self, arg, tmp='rdi'):
+        global nasm, lbl
+        if isinstance(arg, ast.Constant):
+            try:
+                n = int(arg.value)
+                return arg.value
+            except:
+                label = f'str_arg{lbl}'
+                lbl += 1
+                nasm.append(f'  call {label}')
+                nasm.append(nasm_db(arg.value))
+                nasm.append(f'{label}:')
+                nasm.append(f'  pop {tmp}')
+                return tmp
+        elif isinstance(arg, ast.Name):
+            val = arg.id
+            if is_reg(val):
+                return val
+            elif val in self.globals:
+                gtype, _ = self.globals[val]
+                if gtype == 'dq':
+                    nasm.append(f'  mov {tmp}, qword [{val}]')
+                else:
+                    nasm.append(f'  lea {tmp}, [{val}]')
+                return tmp
+            else:
+                pos = self.vars.get_pos(self.current_func, val)
+                return f'qword [rbp-{pos}] ; {val}'
+        elif isinstance(arg, ast.BinOp):
+            self._emit_binop(arg, 'rax')
+            return 'rax'
+        elif isinstance(arg, ast.Call):
+            self.visit_Call(arg)
+            return 'rax'
+        elif isinstance(arg, ast.Subscript):
+            self._load_value(arg, 'rax')
+            return 'rax'
+        else:
+            unimplemented('unsupported call argument type: ' + ast.dump(arg), arg)
+
+    def _push_arg(self, arg):
+        global nasm, lbl
+        if isinstance(arg, ast.Constant):
+            try:
+                n = int(arg.value)
+                nasm.append(f'  push {arg.value}')
+            except:
+                str_param = f'str_param{lbl}'
+                lbl += 1
+                nasm.append(f'  call {str_param}')
+                nasm.append(nasm_db(arg.value))
+                nasm.append(f'{str_param}:')
+        elif isinstance(arg, ast.Name):
+            if is_reg(arg.id):
+                nasm.append(f'  push {arg.id}')
+            elif arg.id in self.globals:
+                gtype, _ = self.globals[arg.id]
+                if gtype == 'dq':
+                    nasm.append(f'  push qword [{arg.id}]')
+                else:
+                    nasm.append(f'  lea rdi, [{arg.id}]')
+                    nasm.append(f'  push rdi')
+            else:
+                pos = self.vars.get_pos(self.current_func, arg.id)
+                nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {arg.id}')
+                nasm.append(f'  push rdi')
+        elif isinstance(arg, ast.BinOp):
+            self._emit_binop(arg, 'rax')
+            nasm.append(f'  push rax')
+        elif isinstance(arg, ast.Call):
+            self.visit_Call(arg)
+            nasm.append(f'  push rax')
+        elif isinstance(arg, ast.Subscript):
+            self._load_value(arg, 'rax')
+            nasm.append(f'  push rax')
+        else:
+            unimplemented('unsupported push arg type: ' + ast.dump(arg), arg)
 
 
     def visit_Import(self, node):
@@ -499,7 +683,7 @@ class visit_functions(ast.NodeVisitor):
             try:
                 code = open(alias.name+'.py','r').read()
             except:
-                unimplemented('only import .py in base folder, compile from py''s folder')
+                unimplemented('only import .py in base folder, compile from py''s folder', node)
             tree = ast.parse(code)
             visitor = visit_functions()
             visitor.visit(tree)
@@ -514,7 +698,7 @@ class visit_functions(ast.NodeVisitor):
         nasm.append(f'  push rbp')
         nasm.append(f'  mov rbp, rsp')
         nasm.append(f'  sub rsp, {STACK_SPACE}')
-        i = 16 
+        i = 16
         for arg in node.args.args:
             if is_reg(arg.arg):
                 nasm.append(f'  mov {arg.arg}, qword [rbp+{i}]')
@@ -526,7 +710,7 @@ class visit_functions(ast.NodeVisitor):
             i += 8
         self.generic_visit(node)
 
-    
+
     def visit_Pass(self, node):
         global nasm
         nasm.append('  nop')
@@ -535,7 +719,7 @@ class visit_functions(ast.NodeVisitor):
 
     def visit_Call(self, node):
         global nasm, lbl
-    
+
         if isinstance(node.func, ast.Name): # built-ins
             if node.func.id == 'range':
                 return
@@ -552,14 +736,14 @@ class visit_functions(ast.NodeVisitor):
                 return
             elif node.func.id == 'len':
                 if is_reg(node.args[0].id):
-                    unimplemented("len(reg) use len(var)")
+                    unimplemented("len(reg) use len(var)", node)
                 else:
                     s = self.vars.get_str(self.current_func, node.args[0].id)
                     if s:
                         nasm.append(f'  mov rax, {len(s)}')
                         self.generic_visit(node)
                     else:
-                        unimplemented('len() weird case')
+                        unimplemented('len() weird case', node)
                     return
             elif node.func.id == 'alloc':
                 sz = node.args[0].value if isinstance(node.args[0], ast.Constant) else node.args[0].id
@@ -571,176 +755,72 @@ class visit_functions(ast.NodeVisitor):
                 nasm.append(f'  pop rax')
                 return
 
+            elif node.func.id == 'syscall':
+                syscall_regs = ['rax', 'rdi', 'rsi', 'rdx', 'r10', 'r8', 'r9']
+                for i, arg in enumerate(node.args):
+                    if i >= len(syscall_regs):
+                        unimplemented('syscall supports max 7 args (nr + 6)', node)
+                    target_reg = syscall_regs[i]
+                    resolved = self._resolve_arg(arg, target_reg)
+                    if isinstance(resolved, int):
+                        nasm.append(f'  mov {target_reg}, {resolved}')
+                    elif resolved != target_reg:
+                        nasm.append(f'  mov {target_reg}, {resolved}')
+                nasm.append(f'  syscall')
+                return
 
             elif node.func.id in regs64:
-                # rax('test',123)
-                # indirect function call reg64 -> use 64bits calling convention
-               
-                # save previous stack and align rsp to 16
                 pos = self.vars.get_pos(self.current_func, 'rsp')
                 align_stack(pos)
 
                 l = len(node.args)
-                if l >= 1:
-                    arg = node.args[0]
-                    if isinstance(arg, ast.Constant):  # constants 
-                        try:
-                            # rax(123)
-                            n = int(arg.value)
-                            arg = arg.value
-                        except:
-                            # rax('test')
-                            label = f'str_arg{lbl}'
-                            lbl += 1
-                            nasm.append(f'  call {label}')
-                            nasm.append(nasm_db(arg.value))
-                            nasm.append(f'{label}:')
-                            arg = 'rdi'
-                            nasm.append(f'  pop {arg}')
+                win64_regs = ['rcx', 'rdx', 'r8', 'r9']
+                for i, target_reg in enumerate(win64_regs):
+                    if l >= i + 1:
+                        resolved = self._resolve_arg(node.args[i], target_reg)
+                        if isinstance(resolved, int):
+                            nasm.append(f'  mov {target_reg}, {resolved}')
+                        elif resolved != target_reg:
+                            nasm.append(f'  mov {target_reg}, {resolved}')
 
-                    elif isinstance(arg, ast.Name):  # vars
-                        # rax(var)
-                        arg = arg.id
-                        if not is_reg(arg):
-                            pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}] ; {arg}'
-                    if arg != 'rcx':
-                        nasm.append(f'  mov rcx, {arg}')
-                if l >= 2:
-                    arg = node.args[1]
-                    if isinstance(arg, ast.Constant):  # constants
-                        try:
-                            # rax(1,123)
-                            n = int(arg.value)
-                            arg = arg.value
-                        except:
-                            # rax(1,'test')
-                            label = f'str_arg{lbl}'
-                            lbl += 1
-                            nasm.append(f'  call {label}')
-                            nasm.append(nasm_db(arg.value))
-                            nasm.append(f'{label}:')
-                            arg = 'rdi'
-                            nasm.append(f'  pop {arg}')
-                    elif isinstance(arg, ast.Name):  # vars
-                        arg = arg.id
-                        if not is_reg(arg):
-                            # rax(1,var)
-                            pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}] ; {arg}'
-                    if arg != 'rdx':
-                        nasm.append(f'  mov rdx, {arg}')
-                if l >= 3:
-                    arg = node.args[2]
-                    if isinstance(arg, ast.Constant):  # constants
-                        try:
-                            # rax(1,1,123)
-                            n = int(arg.value)
-                            arg = arg.value
-                        except:
-                            # rax(1,1,'test')
-                            label = f'str_arg{lbl}'
-                            lbl += 1
-                            nasm.append(f'  call {label}')
-                            nasm.append(nasm_db(arg.value))
-                            nasm.append(f'{label}:')
-                            arg = 'rdi'
-                            nasm.append(f'  pop {arg}')
-                    elif isinstance(arg, ast.Name):  # vars
-                        arg = arg.id
-                        if not is_reg(arg):
-                            pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}] ; {arg}'
-                    if arg != 'r8':
-                        nasm.append(f'  mov r8, {arg}')
-                if l >= 4:
-                    arg = node.args[3]
-                    if isinstance(arg, ast.Constant):  # constants
-                        try:
-                            # rax(1,1,1,123)
-                            n = int(arg.value)
-                            arg = arg.value
-                        except:
-                            # rax(1,1,1,'test')
-                            label = f'str_arg{lbl}'
-                            lbl += 1
-                            nasm.append(f'  call {label}')
-                            nasm.append(nasm_db(arg.value))
-                            nasm.append(f'{label}:')
-                            arg = 'rdi'
-                            nasm.append(f'  pop {arg}')
-                    elif isinstance(arg, ast.Name):  # vars
-                        arg = arg.id
-                        if not is_reg(arg):
-                            pos = self.vars.get_pos(self.current_func, arg)
-                            arg = f'qword [rbp-{pos}] ; {arg}'
-                    if arg != 'r9':
-                        nasm.append(f'  mov r9, {arg}')
                 if l > 4:
                     for arg in reversed(node.args[4:]):
-                        if isinstance(arg, ast.Constant):  # constants 
+                        if isinstance(arg, ast.Constant):
                             try:
-                                # rax(123)
                                 n = int(arg.value)
-                                arg = arg.value
-                                nasm.append(f'  push {arg}')
+                                nasm.append(f'  push {arg.value}')
                             except:
-                                # rax('test')
                                 label = f'str_arg{lbl}'
                                 lbl += 1
                                 nasm.append(f'  call {label}')
                                 nasm.append(nasm_db(arg.value))
                                 nasm.append(f'{label}:')
-                        elif isinstance(arg, ast.Name):  # vars
-                            arg = arg.id
-                            if is_reg(arg):
-                                nasm.append(f'  push {arg}')
+                        elif isinstance(arg, ast.Name):
+                            if is_reg(arg.id):
+                                nasm.append(f'  push {arg.id}')
                             else:
-                                pos = self.vars.get_pos(self.current_func, arg)
-                                arg2 = f'qword [rbp-{pos}]'
-                                nasm.append(f'  mov edi, {arg2} ; {arg}')
-                                nasm.append(f'  push edi')
-
+                                pos2 = self.vars.get_pos(self.current_func, arg.id)
+                                nasm.append(f'  mov rdi, qword [rbp-{pos2}] ; {arg.id}')
+                                nasm.append(f'  push rdi')
+                        elif isinstance(arg, ast.BinOp):
+                            self._emit_binop(arg, 'rax')
+                            nasm.append(f'  push rax')
+                        elif isinstance(arg, ast.Call):
+                            self.visit_Call(arg)
+                            nasm.append(f'  push rax')
                         else:
-                            unimplemented("call with more than 4 args in weird param")
+                            unimplemented("call with more than 4 args in weird param", arg)
 
                 nasm.append(f'  call {node.func.id}')
 
-                # restore previous stack
                 pos = self.vars.get_pos(self.current_func, 'rsp')
                 nasm.append(f'  mov rsp, [rbp-{pos}]')
-                '''
-                if len(node.args) > 0:
-                    nasm.append(f'  add rsp, {len(node.args) * 8}')
-                '''
                 return
 
 
 
         for arg in reversed(node.args):
-            if isinstance(arg, ast.Constant):  # constants 
-                try:
-                    # func(123)
-                    n = int(arg.value)
-                    nasm.append(f'  push {arg.value}')
-                except:
-                    # func('mystr')
-                    str_param = f'str_param{lbl}'
-                    lbl += 1
-                    nasm.append(f'  call {str_param}')
-                    nasm.append(nasm_db(arg.value))
-                    nasm.append(f'{str_param}:')
-
-
-            elif isinstance(arg, ast.Name):  # vars
-                if is_reg(arg.id):
-                    nasm.append(f'  push {arg.id}')
-                else:
-                    # func(var)
-                    pos = self.vars.get_pos(self.current_func, arg.id)
-                    nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {arg.id}')
-                    nasm.append(f'  push rdi')
-
+            self._push_arg(arg)
 
         if isinstance(node.func, ast.Name):
             fname = node.func.id
@@ -748,53 +828,23 @@ class visit_functions(ast.NodeVisitor):
                 l = len(node.args)
                 sym = fname[5:]
                 extern.add(sym)
-                if l >= 1:
-                    nasm.append(f'  pop rdi')
-                if l >= 2:
-                    nasm.append(f'  pop rsi')
-                if l >= 3:
-                    nasm.append(f'  pop rdx')
-                if l >= 4:
-                    nasm.append(f'  pop rcx')
-                if l >= 5:
-                    nasm.append(f'  pop r8')
-                if l >= 6:
-                    nasm.append(f'  pop r9')
+                sysv_regs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9']
+                for i in range(min(l, 6)):
+                    nasm.append(f'  pop {sysv_regs[i]}')
                 nasm.append(f'  call {sym}')
-                if l >= 1:
-                    nasm.append(f'  push rdi')
-                if l >= 2:
-                    nasm.append(f'  push rsi')
-                if l >= 3:
-                    nasm.append(f'  push rdx')
-                if l >= 4:
-                    nasm.append(f'  push rcx')
-                if l >= 5:
-                    nasm.append(f'  push r8')
-                if l >= 6:
-                    nasm.append(f'  push r9')
+                for i in range(min(l, 6) - 1, -1, -1):
+                    nasm.append(f'  push {sysv_regs[i]}')
             else:
                 nasm.append(f'  call {fname}')
 
         elif isinstance(node.func, ast.Attribute):
             fname = node.func.attr
-            unimplemented('call method')
+            unimplemented('call method', node)
 
         if len(node.args) > 0:
             if not fname.startswith('api_'):
                 nasm.append(f'  add rsp, {len(node.args) * 8}')
 
-        self.generic_visit(node)
-
-
-    '''
-    def visit_arguments(self, node):
-        global nasm
-        #for i in range(len(node.args)):
-        #    nasm.append(f'push {node.args[i]}')
-
-        self.generic_visit(node)
-    '''
 
     def visit_Return(self, node):
         global nasm, lbl
@@ -815,55 +865,7 @@ class visit_functions(ast.NodeVisitor):
         elif isinstance(node.value, ast.Call):
             self.visit_Call(node.value)
         elif isinstance(node.value, ast.BinOp):
-            self._load_value(node.value.left, 'rax')
-            right = node.value.right
-            if isinstance(right, ast.Constant):
-                rval = str(right.value)
-            elif isinstance(right, ast.Name):
-                if is_reg(right.id):
-                    rval = right.id
-                else:
-                    pos_r = self.vars.get_pos(self.current_func, right.id)
-                    nasm.append(f'  mov rdi, [rbp-{pos_r}] ; {right.id}')
-                    rval = 'rdi'
-            else:
-                self._load_value(right, 'rdi')
-                rval = 'rdi'
-
-            op = node.value.op
-            if isinstance(op, ast.Add):
-                nasm.append(f'  add rax, {rval}')
-            elif isinstance(op, ast.Sub):
-                nasm.append(f'  sub rax, {rval}')
-            elif isinstance(op, ast.Mult):
-                if rval != 'rdi':
-                    nasm.append(f'  mov rdi, {rval}')
-                nasm.append(f'  mul rdi')
-            elif isinstance(op, ast.Div):
-                nasm.append(f'  xor rdx, rdx')
-                if rval != 'rdi':
-                    nasm.append(f'  mov rdi, {rval}')
-                nasm.append(f'  div rdi')
-            elif isinstance(op, ast.Mod):
-                nasm.append(f'  xor rdx, rdx')
-                if rval != 'rdi':
-                    nasm.append(f'  mov rdi, {rval}')
-                nasm.append(f'  div rdi')
-                nasm.append(f'  mov rax, rdx')
-            elif isinstance(op, ast.BitXor):
-                nasm.append(f'  xor rax, {rval}')
-            elif isinstance(op, ast.BitAnd):
-                nasm.append(f'  and rax, {rval}')
-            elif isinstance(op, ast.BitOr):
-                nasm.append(f'  or rax, {rval}')
-            elif isinstance(op, ast.LShift):
-                nasm.append(f'  mov rcx, {rval}')
-                nasm.append(f'  shl rax, cl')
-            elif isinstance(op, ast.RShift):
-                nasm.append(f'  mov rcx, {rval}')
-                nasm.append(f'  shr rax, cl')
-            else:
-                unimplemented('return binop: ' + str(op))
+            self._emit_binop(node.value)
         elif isinstance(node.value, ast.UnaryOp):
             if isinstance(node.value.op, ast.USub):
                 self._load_value(node.value.operand, 'rax')
@@ -872,11 +874,13 @@ class visit_functions(ast.NodeVisitor):
                 self._load_value(node.value.operand, 'rax')
                 nasm.append(f'  not rax')
             else:
-                unimplemented('return unaryop: ' + str(node.value.op))
+                unimplemented('return unaryop: ' + str(node.value.op), node)
         elif isinstance(node.value, ast.Subscript):
             self._load_value(node.value, 'rax')
+        elif isinstance(node.value, ast.IfExp):
+            self._emit_ifexp(node.value)
         else:
-            unimplemented('return: ' + ast.dump(node.value))
+            unimplemented('return: ' + ast.dump(node.value), node)
         nasm.append('  leave')
         nasm.append('  ret')
 
@@ -884,88 +888,47 @@ class visit_functions(ast.NodeVisitor):
     def visit_Break(self, node):
         global nasm
         if not self.loop_stack:
-            unimplemented('break outside loop')
+            unimplemented('break outside loop', node)
         _, break_label = self.loop_stack[-1]
         nasm.append(f'  jmp {break_label}')
 
     def visit_Continue(self, node):
         global nasm
         if not self.loop_stack:
-            unimplemented('continue outside loop')
+            unimplemented('continue outside loop', node)
         continue_label, _ = self.loop_stack[-1]
         nasm.append(f'  jmp {continue_label}')
 
     def visit_While(self, node):
         global nasm, lbl
 
-        lbl_while = f'while{lbl}'
+        lbl_body = f'while{lbl}'
+        lbl_check = f'whilecheck{lbl}'
         lbl_endwhile = f'endwhile{lbl}'
         lbl += 1
-        nasm.append(f'\n{lbl_while}:')
 
-        self.loop_stack.append((lbl_while, lbl_endwhile))
-        for b in node.body:
-            self.visit(b)
-        self.loop_stack.pop()
+        is_infinite = isinstance(node.test, ast.Constant) and str(node.test.value) == 'True'
 
-        if isinstance(node.test, ast.Constant):
-            if str(node.test.value) == 'True':
-                nasm.append(f'  jmp {lbl_while}')
-            else:
-                unimplemented('value '+str(node.test.value))
-
-        elif isinstance(node.test, ast.Compare):
-
-            if isinstance(node.test.left, ast.Constant):
-                left = node.test.left.value
-            else:
-                left = node.test.left.id
-                if not is_reg(left):
-                    pos = self.vars.get_pos(self.current_func, left)
-                    left = f'qword [rbp-{pos}]'
-
-            if isinstance(node.test.comparators[0], ast.Constant):
-                right = node.test.comparators[0].value
-            else:
-                right = node.test.comparators[0].id
-                if not is_reg(right):
-                    pos = self.vars.get_pos(self.current_func, right)
-                    right = f'qword [rbp-{pos}]'
-
-            if is_reg(right) and is_reg(left):
-                nasm.append(f'  cmp {left}, {right}')
-            else:
-                nasm.append(f'  mov rsi, {left}')
-                nasm.append(f'  mov rdi, {right}')
-                nasm.append(f'  cmp rsi, rdi')
-
-            ops = node.test.ops[0]
-            if isinstance(ops, ast.Gt):
-                nasm.append(f'  jg {lbl_while}')
-            elif isinstance(ops, ast.Lt):
-                nasm.append(f'  jl {lbl_while}')
-            elif isinstance(ops, ast.LtE):
-                nasm.append(f'  jle {lbl_while}')
-            elif isinstance(ops, ast.GtE):
-                nasm.append(f'  jge {lbl_while}')
-            elif isinstance(ops, ast.Eq):
-                nasm.append(f'  je {lbl_while}')
-            elif isinstance(ops, ast.NotEq):
-                nasm.append(f'  jne {lbl_while}')
-            else:
-                unimplemented("while operator "+str(node.test.ops))
-
-        elif isinstance(node.test, ast.BoolOp) or isinstance(node.test, ast.Name) or \
-                (isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)):
-            label_cont = f'whilecont{lbl}'
-            lbl += 1
-            self._emit_if_test(node.test, label_cont)
-            nasm.append(f'  jmp {lbl_endwhile}')
-            nasm.append(f'{label_cont}:')
-            nasm.append(f'  jmp {lbl_while}')
-
+        if is_infinite:
+            nasm.append(f'\n{lbl_body}:')
+            self.loop_stack.append((lbl_body, lbl_endwhile))
+            for b in node.body:
+                self.visit(b)
+            self.loop_stack.pop()
+            nasm.append(f'  jmp {lbl_body}')
         else:
-            unimplemented('while variant '+str(node.test))
+            nasm.append(f'  jmp {lbl_check}')
+            nasm.append(f'\n{lbl_body}:')
+            self.loop_stack.append((lbl_check, lbl_endwhile))
+            for b in node.body:
+                self.visit(b)
+            self.loop_stack.pop()
+            nasm.append(f'\n{lbl_check}:')
+            self._emit_if_test(node.test, lbl_body)
+
+        if node.orelse:
+            for e in node.orelse:
+                self.visit(e)
 
         nasm.append(f'\n{lbl_endwhile}:')
 
@@ -980,8 +943,7 @@ class visit_functions(ast.NodeVisitor):
                     node.iter.func.id == 'range':
                         args = node.iter.args
                         if len(args) == 1:
-                            # range(stop)
-                            range_min = 0 
+                            range_min = 0
                             if isinstance(args[0], ast.Constant):
                                 range_max = args[0].value
                             else:
@@ -989,10 +951,8 @@ class visit_functions(ast.NodeVisitor):
                                 if not is_reg(range_max):
                                     pos = self.vars.get_pos(self.current_func, range_max)
                                     range_max = f'qword [rbp-{pos}]'
-
-                            range_step = 1  
+                            range_step = 1
                         elif len(args) == 2:
-                            # range(start, stop)
                             if isinstance(args[0], ast.Constant):
                                 range_min = args[0].value
                             else:
@@ -1007,9 +967,8 @@ class visit_functions(ast.NodeVisitor):
                                 if not is_reg(range_max):
                                     pos = self.vars.get_pos(self.current_func, range_max)
                                     range_max = f'qword [rbp-{pos}]'
-                            range_step = 1 
+                            range_step = 1
                         elif len(args) == 3:
-                            # range(start, stop, step)
                             if isinstance(args[0], ast.Constant):
                                 range_min = args[0].value
                             else:
@@ -1037,8 +996,10 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  mov {reg}, {range_min}')
                         for_lbl = f'for{lbl}'
                         for_cont = f'forcont{lbl}'
+                        for_check = f'forcheck{lbl}'
                         for_end = f'endfor{lbl}'
                         lbl += 1
+                        nasm.append(f'  jmp {for_check}')
                         nasm.append(f'{for_lbl}:')
                         self.loop_stack.append((for_cont, for_end))
                         for b in node.body:
@@ -1048,15 +1009,21 @@ class visit_functions(ast.NodeVisitor):
                         nasm.append(f'  add {reg}, {range_step}')
                         if pos > 0:
                             nasm.append(f'  mov qword [rbp-{pos}], {reg}')
+                        nasm.append(f'{for_check}:')
                         nasm.append(f'  cmp {reg}, {range_max}')
                         nasm.append(f'  jl {for_lbl}')
+
+                        if node.orelse:
+                            for e in node.orelse:
+                                self.visit(e)
+
                         nasm.append(f'{for_end}:')
 
 
             else:
-                unimplemented('only for range is suported')
+                unimplemented('only for range is suported', node)
         else:
-            unimplemented('complex for')
+            unimplemented('complex for', node)
 
 
     def visit_If(self, node):
@@ -1068,42 +1035,99 @@ class visit_functions(ast.NodeVisitor):
         self._emit_if_test(node.test, label_if)
         self._emit_body(node, label_if)
 
+    def _emit_ifexp(self, node):
+        global nasm, lbl
+        label_true = f'ternary_true{lbl}'
+        label_end = f'ternary_end{lbl}'
+        lbl += 1
+        self._emit_if_test(node.test, label_true)
+        self._load_value(node.orelse, 'rax')
+        nasm.append(f'  jmp {label_end}')
+        nasm.append(f'{label_true}:')
+        self._load_value(node.body, 'rax')
+        nasm.append(f'{label_end}:')
 
     def visit_Assign(self, node):
         global nasm, lbl
+
+        if self.current_func == '':
+            for target in node.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                name = target.id
+                if isinstance(node.value, ast.Constant):
+                    if isinstance(node.value.value, int):
+                        self.globals[name] = ('dq', node.value.value)
+                        self.data_section.append(f'  {name}: dq {node.value.value}')
+                    elif isinstance(node.value.value, str):
+                        s = node.value.value
+                        self.globals[name] = ('str', s)
+                        db_parts = []
+                        chunk = ''
+                        for ch in s:
+                            if 32 <= ord(ch) < 127 and ch != '"' and ch != '\\':
+                                chunk += ch
+                            else:
+                                if chunk:
+                                    db_parts.append(f'"{chunk}"')
+                                    chunk = ''
+                                db_parts.append(f'0x{ord(ch):02x}')
+                        if chunk:
+                            db_parts.append(f'"{chunk}"')
+                        db_parts.append('0')
+                        self.data_section.append(f'  {name}: db {", ".join(db_parts)}')
+                    elif isinstance(node.value.value, bytes):
+                        raw = node.value.value
+                        self.globals[name] = ('bytes', raw)
+                        self.data_section.append(f'  {name}: db {", ".join(f"0x{b:02x}" for b in raw)}')
+                elif isinstance(node.value, ast.List):
+                    elts = [hex(e.value) for e in node.value.elts]
+                    self.globals[name] = ('list', node.value.elts)
+                    self.data_section.append(f'  {name}: db {", ".join(elts)}')
+                else:
+                    unimplemented('global assign: ' + ast.dump(node.value), node)
+            return
+
         for target in node.targets:
             if isinstance(node.value, ast.Constant):
+                if isinstance(node.value.value, bytes):
+                    raw = node.value.value
+                    line = '  db ' + ', '.join(f'0x{b:02x}' for b in raw)
+                    nasm.append(f'  call arr{lbl}')
+                    nasm.append(line)
+                    nasm.append(f'arr{lbl}:')
+                    lbl += 1
+                    if isinstance(target, ast.Name) and is_reg(target.id):
+                        nasm.append(f'  pop {target.id}')
+                    elif isinstance(target, ast.Name):
+                        pos = self.vars.get_pos(self.current_func, target.id, 'A'*len(raw))
+                        nasm.append(f'  pop rdi')
+                        nasm.append(f'  mov qword [rbp-{pos}], rdi ; {target.id}')
+                    return
+
                 if node.value.value == 0:
                     if isinstance(target, ast.Subscript):
                         pos = self.vars.get_pos(self.current_func, target.value.id)
                         if isinstance(target.slice, ast.Name):
-                            # arr[i] = 0
                             idx = target.slice.id
                             pos2 = self.vars.get_pos(self.current_func, idx)
                             nasm.append(f'  mov rsi, qword [rbp-{pos2}] ; {idx}')
                             nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.value.id}')
                             nasm.append(f'  mov byte [rdi+rsi], 0')
                         else:
-                            # arr[3] = 0
                             idx = target.slice.value
                             nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.value.id}')
-                            nasm.append(f'  mov byte [rdi+{idx}], 0') 
+                            nasm.append(f'  mov byte [rdi+{idx}], 0')
                     else:
                         if is_reg(target.id):
-                            # rax = rbx = 0
                             nasm.append(f'  xor {target.id}, {target.id}')
                         else:
-                            # var = 0
                             pos = self.vars.get_pos(self.current_func, target.id)
                             nasm.append(f'  mov qword [rbp-{pos}], 0 ; {target.id}')
                 else:
-                    # value nonzero
-
                     if isinstance(target, ast.Subscript):
                         var = target.value.id
                         if isinstance(target.slice, ast.Constant):
-                            # var[idx] = val
-                            # arr[3] = 0x33
                             idx = target.slice.value
                             pos = self.vars.get_pos(self.current_func, var)
                             val = node.value.value
@@ -1113,8 +1137,6 @@ class visit_functions(ast.NodeVisitor):
 
 
                         elif isinstance(target.slice, ast.Name):
-                            # var[idx] = val
-                            # arr[i] = 0x33
                             idx = target.slice.id
                             pos = self.vars.get_pos(self.current_func, var)
                             pos1 = self.vars.get_pos(self.current_func, idx)
@@ -1128,14 +1150,11 @@ class visit_functions(ast.NodeVisitor):
                         try:
                             n = int(node.value.value)
                             if is_reg(target.id):
-                                # rcx = 3
                                 nasm.append(f'  mov {target.id}, {node.value.value}')
                             else:
-                                # var = 3
                                 pos = self.vars.get_pos(self.current_func, target.id)
                                 nasm.append(f'  mov qword [rbp-{pos}], {node.value.value} ; {target.id}')
                         except Exception as e:
-                            # strings  s = 'hello'
                             nasm.append(f'  call lbl{lbl}')
                             nasm.append(nasm_db(node.value.value))
                             nasm.append(f'lbl{lbl}:')
@@ -1151,36 +1170,51 @@ class visit_functions(ast.NodeVisitor):
                 if node.value.id == 'PEB':
                     nasm.append(f'  xor rdi, rdi')
                     if is_reg(target.id):
-                        # eax = PEB
                         nasm.append(f'  mov {target.id}, gs:[rdi+0x60]')
                     else:
-                        # the_peb = PEB
                         pos = self.vars.get_pos(self.current_func, target.id)
                         nasm.append(f'  mov rsi, gs:[rdi+0x60]')
                         nasm.append(f'  mov qword [rbp-{pos}], rsi ; {target.id}')
 
+                elif node.value.id in self.globals:
+                    gtype, _ = self.globals[node.value.id]
+                    if gtype == 'dq':
+                        src_op = f'qword [{node.value.id}]'
+                    else:
+                        src_op = None
+                    if isinstance(target, ast.Name):
+                        if is_reg(target.id):
+                            if gtype == 'dq':
+                                nasm.append(f'  mov {target.id}, {src_op}')
+                            else:
+                                nasm.append(f'  lea {target.id}, [{node.value.id}]')
+                        else:
+                            pos = self.vars.get_pos(self.current_func, target.id)
+                            if gtype == 'dq':
+                                nasm.append(f'  mov rdi, {src_op}')
+                            else:
+                                nasm.append(f'  lea rdi, [{node.value.id}]')
+                            nasm.append(f'  mov qword [rbp-{pos}], rdi ; {target.id}')
+
                 else:
                     if isinstance(target, ast.Subscript):
-                        # target.value.id[target.slice.id] = node.value.id
                         pos = self.vars.get_pos(self.current_func, target.value.id)
                         val = node.value.id
 
                         if isinstance(target.slice, ast.Constant):
-                            # var[3] = al
                             idx = target.slice.value
                             nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.value.id}')
                             nasm.append(f'  mov [rdi+{idx}], {val}')
                         elif isinstance(target.slice, ast.Name):
-                            # var[i] = al
                             idx = target.slice.id
                             pos2 = self.vars.get_pos(self.current_func, idx)
                             nasm.append(f'  mov rsi, [rbp-{pos2}] ; {idx}')
                             nasm.append(f'  mov rdi, [rbp-{pos}] ; {target.value.id}')
-                            nasm.append(f'  mov [rdi+rsi], {val}') 
+                            nasm.append(f'  mov [rdi+rsi], {val}')
                         else:
-                            unimplemented('weird array[] = reg')
+                            unimplemented('weird array[] = reg', node)
 
-                        
+
                     elif isinstance(target, ast.Name):
                         if target.id != node.value.id:
                             if is_reg(target.id) and is_reg(node.value.id):
@@ -1200,80 +1234,67 @@ class visit_functions(ast.NodeVisitor):
 
             elif isinstance(node.value, ast.Subscript):
                 if node.value.value.id == 'mem':
-                    # mem as second argument ... = mem[ ... ]
 
                     if isinstance(node.value.slice, ast.BinOp):
-                        # mem[rax+something]
                         left = node.value.slice.left.id
 
                         if isinstance(node.value.slice.op, ast.Add):
                             op1 = '+'
                         elif isinstance(node.value.slice.op, ast.Sub):
-                            op1 = '-' 
+                            op1 = '-'
                         elif isinstance(node.value.slice.op, ast.Mult):
                             op1 = '*'
                         elif isinstance(node.value.slice.op, ast.Div):
                             op1 = '/'
                         else:
-                            unimplemented('weird memory access operation')
+                            unimplemented('weird memory access operation', node)
 
 
                         if isinstance(node.value.slice.right, ast.Constant):
-                            # mem[rax+3]
                             right = node.value.slice.right.value
                             nasm.append(f'  mov {target.id}, [{left}{op1}{right}] ; mem[rax+3]')
 
                         elif isinstance(node.value.slice.right, ast.Name):
-                            # mem[rax+rbx]
                             right = node.value.slice.right.id
                             nasm.append(f'  mov {target.id}, [{left}{op1}{right}] ; mem[rax+rbx]')
                         else:
                             if isinstance(node.value.slice.right, ast.BinOp):
-                                # mem[eax+ebx*8]
 
                                 if isinstance(node.value.slice.right.left, ast.Name):
                                     right_left = node.value.slice.right.left.id
                                 else:
-                                    unimplemented('bad assign, has to be like [reg+reg*num]')
-                                
+                                    unimplemented('bad assign, has to be like [reg+reg*num]', node)
+
                                 if isinstance(node.value.slice.right.right, ast.Constant):
                                     right_right = node.value.slice.right.right.value
                                 else:
-                                    unimplemented('bad assign, has to be like [reg+reg*num]')
+                                    unimplemented('bad assign, has to be like [reg+reg*num]', node)
 
 
                                 if isinstance(node.value.slice.right.op, ast.Add):
                                     op2 = '+'
                                 elif isinstance(node.value.slice.right.op, ast.Sub):
-                                    op2 = '-' 
+                                    op2 = '-'
                                 elif isinstance(node.value.slice.right.op, ast.Mult):
                                     op2 = '*'
                                 elif isinstance(node.value.slice.right.op, ast.Div):
                                     op2 = '/'
                                 else:
-                                    unimplemented('weird memory access operation2')
+                                    unimplemented('weird memory access operation2', node)
 
                                 nasm.append(f'  mov {target.id}, [{left}{op1}{right_left}{op2}{right_right}] ; mem[rax+rbx*8]')
                             else:
-                                unimplemented('weird assign')
+                                unimplemented('weird assign', node)
 
 
                     elif isinstance(node.value.slice, ast.Name):
-                        # rax = mem[rbx]
                         reg = node.value.slice.id
                         nasm.append(f'  mov {target.id}, [{reg}] ; x = mem[rbx]')
                     elif isinstance(node.value.slice, ast.Constant):
-                        # rax = mem[0x11223344]
                         nasm.append(f'  mov {target.id}, qword [0x{node.value.slice.value:x}] ; x = mem[0x11223344]')
                     else:
-                        unimplemented(node.value.slice)
+                        unimplemented(node.value.slice, node)
                 else:
-                    '''
-                        mistr = 'test'
-                        l = len(mistr)
-                        bl = al = mistr[0]
-                        if mistr[0] == al:
-                    '''
                     var = node.value.value.id
                     pos = self.vars.get_pos(self.current_func, var)
                     if isinstance(node.value.slice, ast.Constant):
@@ -1290,12 +1311,19 @@ class visit_functions(ast.NodeVisitor):
                             nasm.append(f'  mov rdi, [rbp-{pos2}] ; {idx}')
                         nasm.append(f'  mov {target.id}, byte [rsi+rdi]')
 
+                    elif isinstance(node.value.slice, ast.Slice):
+                        if is_reg(target.id):
+                            self._load_value(node.value, target.id)
+                        else:
+                            self._load_value(node.value, 'rdi')
+                            pos_t = self.vars.get_pos(self.current_func, target.id)
+                            nasm.append(f'  mov [rbp-{pos_t}], rdi ; {target.id}')
                     else:
-                        unimplemented("weird array case")
+                        unimplemented("weird array case", node)
 
 
-            elif isinstance(node.value, ast.Call): # asign call: ebx = somthing()
-                self.generic_visit(node)
+            elif isinstance(node.value, ast.Call):
+                self.visit_Call(node.value)
                 if isinstance(target, ast.Subscript):
                     pos = self.vars.get_pos(self.current_func, target.slice.id)
                     nasm.append(f'  mov rdi, qword [rbp-{pos}] ; {target.slice.id}')
@@ -1303,7 +1331,8 @@ class visit_functions(ast.NodeVisitor):
 
                 else:
                     if is_reg(target.id):
-                        nasm.append(f'  mov {target.id}, rax')
+                        if target.id != 'rax':
+                            nasm.append(f'  mov {target.id}, rax')
                     else:
                         pos = self.vars.get_pos(self.current_func, target.id)
                         nasm.append(f'  mov [rbp-{pos}], rax ; {target.id}')
@@ -1313,8 +1342,8 @@ class visit_functions(ast.NodeVisitor):
             elif isinstance(node.value, ast.List):
 
                 if len(node.value.elts) == 0:
-                    unimplemented("cannot define an empty array")
-                
+                    unimplemented("cannot define an empty array", node)
+
                 else:
                     line = '  db '
                     for byte in node.value.elts:
@@ -1334,56 +1363,7 @@ class visit_functions(ast.NodeVisitor):
 
 
             elif isinstance(node.value, ast.BinOp):
-                self._load_value(node.value.left, 'rax')
-                right = node.value.right
-
-                if isinstance(right, ast.Constant):
-                    rval = str(right.value)
-                elif isinstance(right, ast.Name):
-                    if is_reg(right.id):
-                        rval = right.id
-                    else:
-                        pos_r = self.vars.get_pos(self.current_func, right.id)
-                        nasm.append(f'  mov rdi, [rbp-{pos_r}] ; {right.id}')
-                        rval = 'rdi'
-                else:
-                    self._load_value(right, 'rdi')
-                    rval = 'rdi'
-
-                op = node.value.op
-                if isinstance(op, ast.Add):
-                    nasm.append(f'  add rax, {rval}')
-                elif isinstance(op, ast.Sub):
-                    nasm.append(f'  sub rax, {rval}')
-                elif isinstance(op, ast.Mult):
-                    if rval != 'rdi':
-                        nasm.append(f'  mov rdi, {rval}')
-                    nasm.append(f'  mul rdi')
-                elif isinstance(op, ast.Div):
-                    nasm.append(f'  xor rdx, rdx')
-                    if rval != 'rdi':
-                        nasm.append(f'  mov rdi, {rval}')
-                    nasm.append(f'  div rdi')
-                elif isinstance(op, ast.Mod):
-                    nasm.append(f'  xor rdx, rdx')
-                    if rval != 'rdi':
-                        nasm.append(f'  mov rdi, {rval}')
-                    nasm.append(f'  div rdi')
-                    nasm.append(f'  mov rax, rdx')
-                elif isinstance(op, ast.BitXor):
-                    nasm.append(f'  xor rax, {rval}')
-                elif isinstance(op, ast.BitAnd):
-                    nasm.append(f'  and rax, {rval}')
-                elif isinstance(op, ast.BitOr):
-                    nasm.append(f'  or rax, {rval}')
-                elif isinstance(op, ast.LShift):
-                    nasm.append(f'  mov rcx, {rval}')
-                    nasm.append(f'  shl rax, cl')
-                elif isinstance(op, ast.RShift):
-                    nasm.append(f'  mov rcx, {rval}')
-                    nasm.append(f'  shr rax, cl')
-                else:
-                    unimplemented('binop: ' + str(op))
+                self._emit_binop(node.value)
 
                 if isinstance(target, ast.Name):
                     if is_reg(target.id):
@@ -1418,7 +1398,7 @@ class visit_functions(ast.NodeVisitor):
                     nasm.append(f'  setz al')
                     nasm.append(f'  movzx rax, al')
                 else:
-                    unimplemented('unaryop: ' + str(node.value.op))
+                    unimplemented('unaryop: ' + str(node.value.op), node)
 
                 if isinstance(target, ast.Name):
                     if is_reg(target.id):
@@ -1428,11 +1408,18 @@ class visit_functions(ast.NodeVisitor):
                         pos_t = self.vars.get_pos(self.current_func, target.id)
                         nasm.append(f'  mov [rbp-{pos_t}], rax ; {target.id}')
 
+            elif isinstance(node.value, ast.IfExp):
+                self._emit_ifexp(node.value)
+                if isinstance(target, ast.Name):
+                    if is_reg(target.id):
+                        if target.id != 'rax':
+                            nasm.append(f'  mov {target.id}, rax')
+                    else:
+                        pos_t = self.vars.get_pos(self.current_func, target.id)
+                        nasm.append(f'  mov [rbp-{pos_t}], rax ; {target.id}')
+
             else:
-                unimplemented('assign: ' + ast.dump(node.value))
-
-
-        self.generic_visit(node)
+                unimplemented('assign: ' + ast.dump(node.value), node)
 
 
 
@@ -1450,7 +1437,6 @@ class visit_functions(ast.NodeVisitor):
             val = node.value.id # src
             if not is_reg(val):
                 if not is_reg(reg):
-                    # var1 += var2
                     pos2 = self.vars.get_pos(self.current_func, val)
                     nasm.append(f'  mov rsi, [rbp-{pos2}] ; {val}');
                     nasm.append(f'  mov rdi, [rbp-{pos}] ; {prevreg}');
@@ -1458,14 +1444,13 @@ class visit_functions(ast.NodeVisitor):
                     reg = 'rdi'
                     var2var = (pos, pos2)
                 else:
-                    # rax += var
                     pos = self.vars.get_pos(self.current_func, val)
                     val = f'qword [rbp-{pos}] ; {val}'
 
         elif isinstance(node.value, ast.Constant):
             val = node.value.value
         else:
-            unimplemented('augassign value: ' + ast.dump(node.value))
+            unimplemented('augassign value: ' + ast.dump(node.value), node)
 
         if isinstance(node.op, ast.Add):
             nasm.append(f'  add {reg}, {val}')
@@ -1497,7 +1482,6 @@ class visit_functions(ast.NodeVisitor):
             nasm.append(f'  div rdi')
             if not var2var:
                 nasm.append(f'  mov {reg_to_64(reg) if is_reg(reg) else reg}, rdx')
-            # var2var: result in rdx, stored below
         elif isinstance(node.op, ast.BitXor):
             nasm.append(f'  xor {reg}, {val}')
         elif isinstance(node.op, ast.BitAnd):
@@ -1511,7 +1495,7 @@ class visit_functions(ast.NodeVisitor):
             nasm.append(f'  mov rcx, {val}')
             nasm.append(f'  shr {reg}, cl')
         else:
-            unimplemented('augassign op: ' + str(node.op))
+            unimplemented('augassign op: ' + str(node.op), node)
 
         if var2var:
             if isinstance(node.op, (ast.Mult, ast.Div)):
@@ -1539,9 +1523,16 @@ def main(pyfile):
     elif '64' in sys.argv:
         raw64_mode = True
 
-    
+
     visitor = visit_functions()
     visitor.visit(tree)
+
+    data_sec = ''
+    if visitor.data_section:
+        if win64_mode or lin64_mode:
+            data_sec = '\n\nsection .data\n' + '\n'.join(visitor.data_section)
+        else:
+            data_sec = '\n\n' + '\n'.join(visitor.data_section)
 
     nasmfile = pyfile.replace('.py','.nasm')
     if win64_mode:
@@ -1554,7 +1545,7 @@ section .text
 _start:
     call main
     jmp end
-        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' + data_sec
     elif lin64_mode:
         code ='''
 ; python compiled with pynasm
@@ -1567,7 +1558,7 @@ default rel
 global main
 section .text
 
-        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' + data_sec
     elif raw64_mode:
         code ='''
 ; python compiled with pynasm
@@ -1575,7 +1566,7 @@ bits 64
 default rel
 call main
 jmp end
-        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' + data_sec
     else:
         code ='''
 ; python compiled with pynasm
@@ -1583,7 +1574,7 @@ bits 32
 default rel
 call main
 jmp end
-        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' 
+        '''+'\n'.join(nasm)+'\n\nend:\n  int 3' + data_sec
 
 
 
@@ -1596,7 +1587,7 @@ jmp end
         os.system(f'gcc {nasmfile.replace(".nasm",".o")} -o {pyfile.replace(".py", "")} -no-pie')
     elif raw64_mode:
         os.system(f'nasm -f bin {nasmfile} -o {nasmfile.replace(".nasm",".bin")}')
-        
+
 
 main(sys.argv[1])
 

@@ -716,7 +716,7 @@ def main():
         if rcx == 5:
             continue
         rbx += 1
-''', ['jmp while', 'endwhile'], []),
+''', ['jmp whilecheck', 'endwhile'], []),
 
     ('nested_loops_break', '''
 def main():
@@ -843,6 +843,234 @@ def main():
     l = len(mistr)
     al = mistr[0]
 ''', ['db "test", 0', 'mov rax, 4', 'mov al, byte [rsi+0]'], []),
+
+    # --- while condition-first ---
+
+    ('while_condition_first', '''
+def main():
+    rcx = 10
+    while rcx > 0:
+        rcx -= 1
+''', ['jmp whilecheck', 'whilecheck', 'jg while'], []),
+
+    ('while_else', '''
+def main():
+    rcx = 5
+    while rcx > 0:
+        rcx -= 1
+    else:
+        rax = 42
+''', ['jmp whilecheck', 'whilecheck', 'endwhile', 'mov rax, 42'], []),
+
+    # --- for condition-first ---
+
+    ('for_condition_first', '''
+def main():
+    for rcx in range(10):
+        rax += 1
+''', ['jmp forcheck', 'forcheck', 'jl for'], []),
+
+    ('for_else', '''
+def main():
+    for rcx in range(10):
+        rax += 1
+    else:
+        rbx = 99
+''', ['forcheck', 'endfor', 'mov rbx, 99'], []),
+
+    # --- syscall ---
+
+    ('syscall_write', '''
+def main():
+    msg = 'hi'
+    syscall(1, 1, msg, 2)
+''', ['mov rax, 1', 'mov rdi, 1', 'syscall'], []),
+
+    ('syscall_exit', '''
+def main():
+    syscall(60, 0)
+''', ['mov rax, 60', 'syscall'], []),
+
+    # --- bytes literal ---
+
+    ('bytes_literal', '''
+def main():
+    buf = b'\\x90\\x90\\xcc'
+''', ['db 0x90, 0x90, 0xcc'], []),
+
+    ('bytes_literal_to_reg', '''
+def main():
+    rsi = b'\\x41\\x42\\x43'
+''', ['db 0x41, 0x42, 0x43', 'pop rsi'], []),
+
+    # --- chained comparisons ---
+
+    ('chained_compare', '''
+def main():
+    rax = 5
+    if 0 < rax < 10:
+        rbx = 1
+''', ['chainfail', 'cmp'], []),
+
+    ('chained_compare_three', '''
+def main():
+    rax = 5
+    if 0 < rax < 10 < 100:
+        rbx = 1
+''', ['chainfail'], []),
+
+    # --- ternary ---
+
+    ('ternary_expr', '''
+def main():
+    rax = 5
+    rbx = rax if rax > 0 else rcx
+''', ['ternary_true', 'ternary_end', 'cmp rax, 0', 'jg ternary_true'], []),
+
+    ('ternary_assign_var', '''
+def main():
+    rax = 5
+    x = rax if rax > 0 else rcx
+''', ['ternary_true', 'ternary_end', 'mov [rbp-'], []),
+
+    # --- BinOp / Call as function args ---
+
+    ('binop_as_arg', '''
+def foo(a):
+    return a
+
+def main():
+    rax = 10
+    foo(rax + 1)
+''', ['add rax,', 'push rax', 'call foo'], []),
+
+    ('call_as_arg', '''
+def bar():
+    return 42
+
+def foo(a):
+    return a
+
+def main():
+    foo(bar())
+''', ['call bar', 'push rax', 'call foo'], []),
+
+    ('nested_call_in_indirect', '''
+def bar():
+    return 42
+
+def main():
+    rax = 0x41414141
+    rax(bar(), 2)
+''', ['call bar', 'call rax'], []),
+
+    # --- line numbers in errors (just check compilation works) ---
+
+    ('error_line_numbers', '''
+def main():
+    rax = 1
+    rbx = 2
+    return rax
+''', ['mov rax, 1', 'mov rbx, 2', 'leave', 'ret'], []),
+
+    # --- _emit_binop shared helper (return + assign use same path) ---
+
+    ('binop_shared_return', '''
+def main():
+    x = 10
+    y = 3
+    return x + y
+''', ['add rax, rdi', 'leave', 'ret'], []),
+
+    ('binop_shared_assign', '''
+def main():
+    x = 10
+    y = 3
+    z = x + y
+''', ['add rax, rdi', 'mov [rbp-'], []),
+
+    # --- global variables ---
+
+    ('global_int', '''
+BUFSIZE = 1024
+
+def main():
+    rax = BUFSIZE
+''', ['BUFSIZE: dq 1024', 'mov rax, qword [BUFSIZE]'], []),
+
+    ('global_string', '''
+greeting = 'hello'
+
+def main():
+    rsi = greeting
+''', ['greeting: db "hello", 0', 'lea rsi, [greeting]'], []),
+
+    ('global_bytes', '''
+code = b'\\x90\\x90\\xcc'
+
+def main():
+    rax = code
+''', ['code: db 0x90, 0x90, 0xcc', 'lea rax, [code]'], []),
+
+    ('global_list', '''
+table = [0x41, 0x42, 0x43]
+
+def main():
+    rsi = table
+''', ['table: db 0x41, 0x42, 0x43', 'lea rsi, [table]'], []),
+
+    ('global_to_var', '''
+N = 100
+
+def main():
+    x = N
+''', ['N: dq 100', 'mov rdi, qword [N]', 'mov qword [rbp-'], []),
+
+    ('global_data_section_elf', '''
+G = 42
+
+def main():
+    rax = G
+''', ['section .data', 'G: dq 42'], [], 'elf'),
+
+    # --- slice as pointer ---
+
+    ('slice_const_lower', '''
+def main():
+    msg = 'Hello, World!'
+    rsi = msg[7:]
+''', ['add rsi, 7'], []),
+
+    ('slice_zero_lower', '''
+def main():
+    msg = 'Hello, World!'
+    rsi = msg[0:]
+''', ['add rsi, 0'], []),
+
+    ('slice_reg_lower', '''
+def main():
+    msg = 'Hello, World!'
+    rsi = msg[rcx:]
+''', ['add rsi, rcx'], []),
+
+    ('slice_var_lower', '''
+def main():
+    msg = 'Hello, World!'
+    offset = 3
+    rsi = msg[offset:]
+''', ['add rsi, rdi'], []),
+
+    ('slice_to_var', '''
+def main():
+    msg = 'Hello, World!'
+    ptr = msg[5:]
+''', ['add rdi, 5', 'mov [rbp-'], []),
+
+    ('slice_both_bounds', '''
+def main():
+    msg = 'Hello, World!'
+    rsi = msg[2:5]
+''', ['add rsi, 2'], []),
 
 ]
 
